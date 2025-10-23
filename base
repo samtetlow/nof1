@@ -1,0 +1,642 @@
+# app.py
+# n of 1 — single-file MVP (FastAPI + SQLite + SQLAlchemy + matching engine)
+# Run:  pip install fastapi uvicorn sqlalchemy pydantic typing-extensions python-multipart
+#       uvicorn app:app --reload
+import os
+import re
+import json
+import uuid
+import math
+import pathlib
+from datetime import datetime
+from typing import List, Optional, Dict, Any, Tuple
+
+from fastapi import FastAPI, HTTPException, UploadFile, File, Body, Query
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+
+from sqlalchemy import (
+    create_engine, Column, String, Integer, Float, JSON as SA_JSON,
+    DateTime, Text
+)
+from sqlalchemy.orm import declarative_base, sessionmaker
+
+# --------------------------------------------------------------------------------------
+# Config / Storage
+# --------------------------------------------------------------------------------------
+DB_URL = os.getenv("DATABASE_URL", "sqlite:///./nof1.db")
+WEIGHTS_PATH = pathlib.Path(os.getenv("WEIGHTS_PATH", "./weights.yaml"))  # optional external file
+
+engine = create_engine(DB_URL, connect_args={"check_same_thread": False} if DB_URL.startswith("sqlite") else {})
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+DEFAULT_WEIGHTS = {
+    "naics": 0.20,
+    "capabilities": 0.25,
+    "past_performance": 0.20,
+    "size_status": 0.10,
+    "clearance": 0.10,
+    "location": 0.05,
+    "keywords": 0.10,
+}
+
+def load_weights() -> Dict[str, float]:
+    if WEIGHTS_PATH.exists():
+        try:
+            import yaml
+            return yaml.safe_load(WEIGHTS_PATH.read_text()) or DEFAULT_WEIGHTS
+        except Exception:
+            return DEFAULT_WEIGHTS
+    return DEFAULT_WEIGHTS
+
+def save_weights(weights: Dict[str, float]) -> None:
+    try:
+        import yaml
+        WEIGHTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        WEIGHTS_PATH.write_text(yaml.dump(weights, sort_keys=True))
+    except Exception:
+        # Fallback: keep only in-memory without persisting
+        pass
+
+# --------------------------------------------------------------------------------------
+# Models (SQLite friendly: use JSON columns for arrays)
+# --------------------------------------------------------------------------------------
+class CompanyORM(Base):
+    __tablename__ = "companies"
+    company_id = Column(String, primary_key=True)
+    name = Column(String, index=True)
+    duns = Column(String, nullable=True, index=True)
+    cage_code = Column(String, nullable=True, index=True)
+    naics_codes = Column(SA_JSON)              # list[str]
+    size = Column(String)                      # Small/Medium/Large
+    socioeconomic_status = Column(SA_JSON)     # list[str] e.g., ["8(a)","WOSB"]
+    capabilities = Column(SA_JSON)             # list[str]
+    certifications = Column(SA_JSON)           # list[str]
+    security_clearances = Column(SA_JSON)      # list[str]
+    locations = Column(SA_JSON)                # list[str]
+    employees = Column(Integer)
+    annual_revenue = Column(Float)
+    description = Column(Text)
+    keywords = Column(SA_JSON)                 # list[str]
+    capability_statement = Column(Text)
+    website = Column(String)
+
+class PastContractORM(Base):
+    __tablename__ = "past_contracts"
+    id = Column(String, primary_key=True)
+    company_id = Column(String)                # FK-ish; simplified for single file
+    agency = Column(String)
+    contract_number = Column(String)
+    value = Column(String)                     # raw string
+    value_usd = Column(Float)                  # normalized
+    start_date = Column(DateTime)
+    end_date = Column(DateTime)
+    description = Column(Text)
+
+class SolicitationORM(Base):
+    __tablename__ = "solicitations"
+    job_id = Column(String, primary_key=True)
+    solicitation_id = Column(String)
+    title = Column(String)
+    agency = Column(String, index=True)
+    posting_date = Column(DateTime)
+    due_date = Column(DateTime)
+    contract_type = Column(String)
+    set_asides = Column(SA_JSON)               # list[str]
+    naics_codes = Column(SA_JSON)              # list[str]
+    place_of_performance = Column(String)
+    estimated_value = Column(String)
+    technical_requirements = Column(SA_JSON)   # list[str]
+    evaluation_criteria = Column(SA_JSON)      # dict
+    keywords = Column(SA_JSON)                 # list[str]
+    required_capabilities = Column(SA_JSON)    # list[str]
+    past_performance_requirements = Column(SA_JSON)  # dict
+    security_clearance = Column(String)
+    raw_text = Column(Text)
+
+Base.metadata.create_all(bind=engine)
+
+# --------------------------------------------------------------------------------------
+# Schemas
+# --------------------------------------------------------------------------------------
+class CompanyIn(BaseModel):
+    name: str
+    duns: Optional[str] = None
+    cage_code: Optional[str] = None
+    naics_codes: List[str] = Field(default_factory=list)
+    size: Optional[str] = None
+    socioeconomic_status: List[str] = Field(default_factory=list)
+    capabilities: List[str] = Field(default_factory=list)
+    certifications: List[str] = Field(default_factory=list)
+    security_clearances: List[str] = Field(default_factory=list)
+    locations: List[str] = Field(default_factory=list)
+    employees: Optional[int] = None
+    annual_revenue: Optional[float] = None
+    description: Optional[str] = None
+    keywords: List[str] = Field(default_factory=list)
+    capability_statement: Optional[str] = None
+    website: Optional[str] = None
+
+class CompanyOut(CompanyIn):
+    company_id: str
+
+class PastContractIn(BaseModel):
+    company_id: str
+    agency: Optional[str] = None
+    contract_number: Optional[str] = None
+    value: Optional[str] = None
+    value_usd: Optional[float] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    description: Optional[str] = None
+
+class PastContractOut(PastContractIn):
+    id: str
+
+class SolicitationIn(BaseModel):
+    solicitation_id: Optional[str] = None
+    title: Optional[str] = None
+    agency: Optional[str] = None
+    posting_date: Optional[datetime] = None
+    due_date: Optional[datetime] = None
+    contract_type: Optional[str] = None
+    set_asides: List[str] = Field(default_factory=list)
+    naics_codes: List[str] = Field(default_factory=list)
+    place_of_performance: Optional[str] = None
+    estimated_value: Optional[str] = None
+    technical_requirements: List[str] = Field(default_factory=list)
+    evaluation_criteria: Dict[str, Any] = Field(default_factory=dict)
+    keywords: List[str] = Field(default_factory=list)
+    required_capabilities: List[str] = Field(default_factory=list)
+    past_performance_requirements: Dict[str, Any] = Field(default_factory=dict)
+    security_clearance: Optional[str] = None
+    raw_text: Optional[str] = None
+
+class MatchResult(BaseModel):
+    company_id: str
+    name: str
+    score: float
+    strengths: List[str]
+    gaps: List[str]
+    recommendation: str
+
+# --------------------------------------------------------------------------------------
+# Lightweight Solicitation Parser (deterministic extractors)
+# --------------------------------------------------------------------------------------
+NAICS_RX = re.compile(r"\b(5415[1-9]\d?|54\d{3}|3364\d|334\d{2}|6114\d|6211\d|6221\d)\b")
+SETASIDE_TERMS = ["8(a)", "WOSB", "EDWOSB", "SDVOSB", "HUBZone", "Small Business", "SB"]
+CLEARANCE_TERMS = ["Public Trust", "Confidential", "Secret", "Top Secret", "TS", "TS/SCI"]
+
+def parse_solicitation_text(text: str) -> Dict[str, Any]:
+    naics = list(sorted(set(NAICS_RX.findall(text or ""))))
+    set_asides = [t for t in SETASIDE_TERMS if re.search(rf"\b{re.escape(t)}\b", text or "", re.I)]
+    clearance = None
+    for c in CLEARANCE_TERMS:
+        if re.search(rf"\b{re.escape(c)}\b", text or "", re.I):
+            clearance = c
+            break
+
+    # naive keywords/capabilities extraction (split, filter, top-k)
+    words = [w.lower() for w in re.findall(r"[a-zA-Z][a-zA-Z0-9\-]{2,}", text or "")]
+    freq: Dict[str, int] = {}
+    for w in words:
+        freq[w] = freq.get(w, 0) + 1
+    common = sorted(freq.items(), key=lambda x: x[1], reverse=True)[:40]
+    keywords = [w for w, _ in common if w not in {"the","and","for","with","that","this","from","shall","will","must","have","are","was","were","has","had","but","not","any","all","may"}][:20]
+
+    return {
+        "naics_codes": naics,
+        "set_asides": set_asides,
+        "security_clearance": clearance,
+        "keywords": keywords,
+        # leave other fields empty; caller may supply structured JSON directly
+    }
+
+# --------------------------------------------------------------------------------------
+# Matching Engine
+# --------------------------------------------------------------------------------------
+class MatchingEngine:
+    def __init__(self, weights: Optional[Dict[str, float]] = None):
+        self.weights = weights or load_weights()
+        # Fail-fast caps for hard requirements
+        self.hard_caps = {"set_aside": 0.49, "clearance": 0.49}
+
+    @staticmethod
+    def _norm(s: Optional[str]) -> str:
+        return (s or "").strip().lower()
+
+    @staticmethod
+    def _list_norm(lst: Optional[List[str]]) -> List[str]:
+        return [MatchingEngine._norm(x) for x in (lst or []) if x]
+
+    def _score_naics(self, sol: Dict[str, Any], comp: CompanyORM) -> float:
+        s = set(self._list_norm(sol.get("naics_codes")))
+        c = set(self._list_norm(comp.naics_codes))
+        return 1.0 if s and (s & c) else 0.0
+
+    def _score_capabilities(self, sol: Dict[str, Any], comp: CompanyORM) -> float:
+        required = set(self._list_norm(sol.get("required_capabilities")))
+        if not required:
+            # fallback to keywords vs company capabilities
+            required = set(self._list_norm(sol.get("keywords")))
+        caps = set(self._list_norm(comp.capabilities))
+        if not required:
+            return 0.5 if caps else 0.0
+        inter = len(required & caps)
+        return min(1.0, inter / max(1, len(required)))
+
+    def _score_past_perf(self, sol: Dict[str, Any], comp: CompanyORM) -> float:
+        # very simple proxy: if keywords overlap with company keywords/description
+        kws = set(self._list_norm(sol.get("keywords")))
+        comp_kws = set(self._list_norm(comp.keywords))
+        desc = set(self._list_norm(re.findall(r"[a-zA-Z][a-zA-Z0-9\-]{2,}", comp.description or "")))
+        inter = len(kws & (comp_kws | desc))
+        return min(1.0, inter / max(1, len(kws))) if kws else (0.3 if comp_kws or desc else 0.0)
+
+    def _score_size_status(self, sol: Dict[str, Any], comp: CompanyORM) -> float:
+        # If solicitation mentions Small Business set-aside, prefer Small
+        req_ss = set(self._list_norm(sol.get("set_asides")))
+        comp_size = self._norm(comp.size)
+        if not req_ss:
+            return 0.5 if comp_size else 0.0
+        if "small business" in req_ss or "sb" in req_ss:
+            return 1.0 if comp_size in {"small", "micro"} else 0.0
+        return 0.5
+
+    def _score_clearance(self, sol: Dict[str, Any], comp: CompanyORM) -> float:
+        req = self._norm(sol.get("security_clearance"))
+        if not req:
+            return 0.5
+        clrs = set(self._list_norm(comp.security_clearances))
+        return 1.0 if req in clrs else 0.0
+
+    def _score_location(self, sol: Dict[str, Any], comp: CompanyORM) -> float:
+        # crude: match any location word overlap
+        sol_loc = set(self._list_norm([sol.get("place_of_performance")]))
+        comp_loc = set(self._list_norm(comp.locations))
+        return 1.0 if sol_loc and (sol_loc & comp_loc) else (0.4 if comp_loc else 0.0)
+
+    def _score_keywords(self, sol: Dict[str, Any], comp: CompanyORM) -> float:
+        kws = set(self._list_norm(sol.get("keywords")))
+        caps = set(self._list_norm(comp.capabilities))
+        comp_kws = set(self._list_norm(comp.keywords))
+        inter = len(kws & (caps | comp_kws))
+        return min(1.0, inter / max(1, len(kws))) if kws else (0.3 if caps or comp_kws else 0.0)
+
+    def _meets_set_aside(self, comp: CompanyORM, required: List[str]) -> bool:
+        comp_ss = set(self._list_norm(comp.socioeconomic_status))
+        req = set(self._list_norm(required))
+        return bool(comp_ss & req) or not req
+
+    def _meets_clearance(self, comp: CompanyORM, required: Optional[str]) -> bool:
+        if not required:
+            return True
+        clrs = set(self._list_norm(comp.security_clearances))
+        return self._norm(required) in clrs
+
+    def score(self, sol: Dict[str, Any], comp: CompanyORM) -> Tuple[float, List[str], List[str]]:
+        s_naics = self._score_naics(sol, comp)
+        s_caps = self._score_capabilities(sol, comp)
+        s_pp = self._score_past_perf(sol, comp)
+        s_size = self._score_size_status(sol, comp)
+        s_clear = self._score_clearance(sol, comp)
+        s_loc = self._score_location(sol, comp)
+        s_kw = self._score_keywords(sol, comp)
+
+        total = (
+            self.weights["naics"] * s_naics +
+            self.weights["capabilities"] * s_caps +
+            self.weights["past_performance"] * s_pp +
+            self.weights["size_status"] * s_size +
+            self.weights["clearance"] * s_clear +
+            self.weights["location"] * s_loc +
+            self.weights["keywords"] * s_kw
+        )
+
+        # Fail-fast caps for hard requirements
+        if not self._meets_set_aside(comp, sol.get("set_asides", [])):
+            total = min(total, self.hard_caps["set_aside"])
+        if not self._meets_clearance(comp, sol.get("security_clearance")):
+            total = min(total, self.hard_caps["clearance"])
+
+        strengths, gaps = [], []
+        if s_naics >= 1: strengths.append("NAICS match")
+        else: gaps.append("NAICS mismatch")
+        if s_caps >= 0.7: strengths.append("Capabilities aligned")
+        else: gaps.append("Capabilities gap")
+        if s_pp >= 0.6: strengths.append("Relevant past performance")
+        else: gaps.append("Limited past performance alignment")
+        if s_size >= 0.8: strengths.append("Meets size status")
+        if s_clear >= 1.0: strengths.append("Required clearance available")
+        elif sol.get("security_clearance"): gaps.append("Missing required clearance")
+        if s_loc >= 1.0: strengths.append("Location alignment")
+        if s_kw >= 0.6: strengths.append("Keyword alignment")
+        return max(0.0, min(1.0, total)), strengths, gaps
+
+    @staticmethod
+    def label(score: float) -> str:
+        if score >= 0.75: return "Recommended"
+        if score >= 0.5:  return "Borderline"
+        return "Not Recommended"
+
+# --------------------------------------------------------------------------------------
+# FastAPI app
+# --------------------------------------------------------------------------------------
+app = FastAPI(title="n of 1 — Reverse Search Platform (single-file MVP)")
+
+# ----------------------------------
+# Weights endpoints
+# ----------------------------------
+@app.get("/api/weights")
+def get_weights():
+    return load_weights()
+
+@app.put("/api/weights")
+def put_weights(new_weights: Dict[str, float]):
+    expected = set(DEFAULT_WEIGHTS.keys())
+    unknown = set(new_weights) - expected
+    if unknown:
+        raise HTTPException(400, f"Unknown keys: {', '.join(sorted(unknown))}")
+    for k, v in new_weights.items():
+        if not isinstance(v, (int, float)):
+            raise HTTPException(400, f"Weight for {k} must be numeric")
+    save_weights(new_weights)
+    return {"ok": True, "weights": load_weights()}
+
+# ----------------------------------
+# Company CRUD + search
+# ----------------------------------
+@app.post("/api/companies", response_model=CompanyOut)
+def create_company(data: CompanyIn):
+    db = SessionLocal()
+    try:
+        c = CompanyORM(
+            company_id=str(uuid.uuid4()),
+            **data.model_dump()
+        )
+        db.add(c)
+        db.commit()
+        return CompanyOut(company_id=c.company_id, **data.model_dump())
+    finally:
+        db.close()
+
+@app.get("/api/companies/{company_id}", response_model=CompanyOut)
+def get_company(company_id: str):
+    db = SessionLocal()
+    try:
+        c = db.query(CompanyORM).get(company_id)
+        if not c:
+            raise HTTPException(404, "Not found")
+        return CompanyOut(
+            company_id=c.company_id,
+            name=c.name,
+            duns=c.duns,
+            cage_code=c.cage_code,
+            naics_codes=c.naics_codes or [],
+            size=c.size,
+            socioeconomic_status=c.socioeconomic_status or [],
+            capabilities=c.capabilities or [],
+            certifications=c.certifications or [],
+            security_clearances=c.security_clearances or [],
+            locations=c.locations or [],
+            employees=c.employees,
+            annual_revenue=c.annual_revenue,
+            description=c.description,
+            keywords=c.keywords or [],
+            capability_statement=c.capability_statement,
+            website=c.website
+        )
+    finally:
+        db.close()
+
+@app.get("/api/companies/search")
+def search_companies(
+    q: Optional[str] = Query(default=None),
+    naics: Optional[str] = Query(default=None),
+    set_aside: Optional[str] = Query(default=None),
+    clearance: Optional[str] = Query(default=None),
+    location: Optional[str] = Query(default=None),
+    limit: int = 25
+):
+    db = SessionLocal()
+    try:
+        rows = db.query(CompanyORM).all()
+        # Basic filtering in Python (SQLite JSON filtering is clunky without custom functions)
+        def norm(s): return (s or "").strip().lower()
+        out = []
+        for c in rows:
+            if q:
+                if q.lower() not in (c.name or "").lower() and (q.lower() not in (c.description or "").lower()):
+                    continue
+            if naics:
+                if naics not in (c.naics_codes or []):
+                    continue
+            if set_aside:
+                if not any(norm(set_aside) == norm(x) for x in (c.socioeconomic_status or [])):
+                    continue
+            if clearance:
+                if not any(norm(clearance) == norm(x) for x in (c.security_clearances or [])):
+                    continue
+            if location:
+                if not any(norm(location) == norm(x) for x in (c.locations or [])):
+                    continue
+            out.append({
+                "company_id": c.company_id,
+                "name": c.name,
+                "naics_codes": c.naics_codes or [],
+                "capabilities": c.capabilities or [],
+                "locations": c.locations or [],
+                "socioeconomic_status": c.socioeconomic_status or [],
+                "security_clearances": c.security_clearances or []
+            })
+            if len(out) >= limit:
+                break
+        return JSONResponse(out)
+    finally:
+        db.close()
+
+# ----------------------------------
+# Past contracts (minimal)
+# ----------------------------------
+@app.post("/api/past-contracts", response_model=PastContractOut)
+def add_past_contract(data: PastContractIn):
+    db = SessionLocal()
+    try:
+        if not db.query(CompanyORM).get(data.company_id):
+            raise HTTPException(400, "company_id does not exist")
+        pc = PastContractORM(id=str(uuid.uuid4()), **data.model_dump())
+        db.add(pc)
+        db.commit()
+        return PastContractOut(id=pc.id, **data.model_dump())
+    finally:
+        db.close()
+
+# ----------------------------------
+# Solicitations: parse + store + match
+# ----------------------------------
+@app.post("/api/solicitations/parse")
+def parse_solicitation(raw_text: str = Body(..., embed=True)):
+    parsed = parse_solicitation_text(raw_text)
+    return parsed
+
+@app.post("/api/solicitations")
+def create_solicitation(sol: SolicitationIn):
+    db = SessionLocal()
+    try:
+        job_id = str(uuid.uuid4())
+        payload = sol.model_dump()
+        # if no structured fields provided but raw_text present, parse it
+        if sol.raw_text and not (sol.naics_codes or sol.set_asides or sol.security_clearance or sol.keywords):
+            parsed = parse_solicitation_text(sol.raw_text)
+            for k, v in parsed.items():
+                payload.setdefault(k, v)
+        rec = SolicitationORM(job_id=job_id, **payload)
+        db.add(rec)
+        db.commit()
+        return {"job_id": job_id}
+    finally:
+        db.close()
+
+@app.get("/api/solicitations/{job_id}")
+def get_solicitation(job_id: str):
+    db = SessionLocal()
+    try:
+        s = db.query(SolicitationORM).get(job_id)
+        if not s:
+            raise HTTPException(404, "Not found")
+        return {
+            "job_id": s.job_id,
+            "solicitation_id": s.solicitation_id,
+            "title": s.title,
+            "agency": s.agency,
+            "posting_date": s.posting_date,
+            "due_date": s.due_date,
+            "contract_type": s.contract_type,
+            "set_asides": s.set_asides or [],
+            "naics_codes": s.naics_codes or [],
+            "place_of_performance": s.place_of_performance,
+            "estimated_value": s.estimated_value,
+            "technical_requirements": s.technical_requirements or [],
+            "evaluation_criteria": s.evaluation_criteria or {},
+            "keywords": s.keywords or [],
+            "required_capabilities": s.required_capabilities or [],
+            "past_performance_requirements": s.past_performance_requirements or {},
+            "security_clearance": s.security_clearance,
+            "raw_text": s.raw_text,
+        }
+    finally:
+        db.close()
+
+@app.post("/api/match", response_model=List[MatchResult])
+def match_companies(
+    solicitation: SolicitationIn = Body(...),
+    top_k: int = Query(25, ge=1, le=200)
+):
+    # Compose a dict for scoring (may include parsed fields)
+    sol_dict = solicitation.model_dump()
+    if solicitation.raw_text:
+        parsed = parse_solicitation_text(solicitation.raw_text)
+        for k, v in parsed.items():
+            sol_dict.setdefault(k, v)
+
+    me = MatchingEngine(weights=load_weights())
+    db = SessionLocal()
+    try:
+        companies = db.query(CompanyORM).all()
+        scored: List[Tuple[CompanyORM, float, List[str], List[str]]] = []
+        for c in companies:
+            score, strengths, gaps = me.score(sol_dict, c)
+            scored.append((c, score, strengths, gaps))
+        scored.sort(key=lambda x: x[1], reverse=True)
+        results: List[MatchResult] = []
+        for c, score, strengths, gaps in scored[:top_k]:
+            results.append(MatchResult(
+                company_id=c.company_id,
+                name=c.name,
+                score=round(score, 4),
+                strengths=strengths,
+                gaps=gaps,
+                recommendation=MatchingEngine.label(score)
+            ))
+        return results
+    finally:
+        db.close()
+
+# --------------------------------------------------------------------------------------
+# Seed data helper (optional): call /seed to get a few companies to play with
+# --------------------------------------------------------------------------------------
+SEED = [
+    {
+        "name": "Aegis Cyber Solutions",
+        "naics_codes": ["541512", "541511"],
+        "size": "Small",
+        "socioeconomic_status": ["SB", "SDVOSB"],
+        "capabilities": ["cybersecurity", "incident response", "zero trust", "cloud migration"],
+        "security_clearances": ["Secret", "Top Secret"],
+        "locations": ["va", "dc"],
+        "description": "Defensive cyber and cloud engineering for federal civilian and DoD.",
+        "keywords": ["siem", "soar", "mitre att&ck", "authority to operate"],
+        "website": "https://aegis.example"
+    },
+    {
+        "name": "Helio Bioinformatics",
+        "naics_codes": ["541715", "541511"],
+        "size": "Small",
+        "socioeconomic_status": ["SB", "WOSB"],
+        "capabilities": ["bioinformatics", "genomics", "ml modeling", "nlp"],
+        "security_clearances": [],
+        "locations": ["ma", "ca"],
+        "description": "ML-driven genomic analysis and diagnostics platforms.",
+        "keywords": ["variant calling", "rna-seq", "qPCR"],
+        "website": "https://helio.example"
+    },
+    {
+        "name": "Atlas Systems Integration",
+        "naics_codes": ["541512", "541513", "541519"],
+        "size": "Large",
+        "socioeconomic_status": [],
+        "capabilities": ["systems integration", "devsecops", "kubernetes", "data engineering"],
+        "security_clearances": ["Public Trust", "Secret"],
+        "locations": ["tx", "va", "co"],
+        "description": "Enterprise systems integration and data platforms for federal agencies.",
+        "keywords": ["etl", "data lake", "spark", "k8s"],
+        "website": "https://atlas.example"
+    }
+]
+
+@app.post("/seed")
+def seed_companies():
+    db = SessionLocal()
+    try:
+        created = []
+        for s in SEED:
+            c = CompanyORM(company_id=str(uuid.uuid4()), **s)
+            db.add(c)
+            created.append(c.company_id)
+        db.commit()
+        return {"created": created}
+    finally:
+        db.close()
+
+# --------------------------------------------------------------------------------------
+# Root
+# --------------------------------------------------------------------------------------
+@app.get("/")
+def root():
+    return {
+        "service": "n of 1 — Reverse Search (single-file MVP)",
+        "endpoints": {
+            "weights_get": "/api/weights",
+            "weights_put": "/api/weights",
+            "company_create": "/api/companies",
+            "company_get": "/api/companies/{company_id}",
+            "company_search": "/api/companies/search",
+            "past_contract_create": "/api/past-contracts",
+            "solicitation_parse": "/api/solicitations/parse",
+            "solicitation_create": "/api/solicitations",
+            "solicitation_get": "/api/solicitations/{job_id}",
+            "match": "/api/match",
+            "seed": "/seed"
+        }
+    }
