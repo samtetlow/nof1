@@ -68,7 +68,7 @@ class ThemeBasedSearch:
         
         # 6. ChatGPT for AI-powered company recommendations
         if "chatgpt" in self.dsm.sources:
-            search_tasks.append(self._search_chatgpt(themes, max_companies, company_size))
+            search_tasks.append(self._search_chatgpt(themes, max_companies, company_type, company_size))
         
         # Execute all searches in parallel
         if search_tasks:
@@ -259,15 +259,20 @@ class ThemeBasedSearch:
             logger.error(f"SBIR search error: {e}")
             return []
     
-    async def _search_chatgpt(self, themes: Dict[str, Any], max_companies: int = 10, company_size: str = "all") -> List[Dict[str, Any]]:
+    async def _search_chatgpt(self, themes: Dict[str, Any], max_companies: int = 10, company_type: str = "for-profit", company_size: str = "all") -> List[Dict[str, Any]]:
         """Use ChatGPT to suggest relevant companies"""
-        logger.info(f"Using ChatGPT to discover up to {max_companies} matching companies (size: {company_size})")
+        logger.info(f"Using ChatGPT to discover up to {max_companies} matching companies (type: {company_type}, size: {company_size})")
         
         try:
-            # Call ChatGPT's search_contracts with themes, max count, and size filter
+            # Request 50% more companies than needed to account for deduplication/filtering
+            # Minimum of max_companies, maximum of max_companies * 1.5
+            requested_count = max(max_companies, min(int(max_companies * 1.5), 50))
+            logger.info(f"Requesting {requested_count} companies from ChatGPT (will return top {max_companies})")
+            
+            # Call ChatGPT's search_contracts with themes, max count, type, and size filter
             chatgpt_results = await self.dsm.sources["chatgpt"].search_contracts(
                 "", 
-                {'themes': themes, 'max_companies': max_companies, 'company_size': company_size}
+                {'themes': themes, 'max_companies': requested_count, 'company_type': company_type, 'company_size': company_size}
             )
             
             companies = []

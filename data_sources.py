@@ -192,7 +192,8 @@ class ChatGPTSource:
                 return []
             
             themes = filters.get('themes', {})
-            max_companies = max(1, min(filters.get('max_companies', 10), 20)) if filters else 10  # Clamp between 1-20
+            max_companies = max(1, min(filters.get('max_companies', 10), 50)) if filters else 10  # Clamp between 1-50
+            company_type = filters.get('company_type', 'for-profit') if filters else 'for-profit'
             company_size = filters.get('company_size', 'all') if filters else 'all'
             
             problem_statement = themes.get('problem_statement', '')
@@ -205,6 +206,13 @@ class ChatGPTSource:
             if not problem_areas and not search_keywords and not technical_capabilities:
                 logger.warning("Insufficient theme data for ChatGPT search")
                 return []
+            
+            # Build type requirement
+            type_requirement = ""
+            if company_type == "academic-nonprofit":
+                type_requirement = "\n\n**CRITICAL TYPE REQUIREMENT: ONLY suggest ACADEMIC INSTITUTIONS, UNIVERSITIES, RESEARCH CENTERS, NON-PROFIT ORGANIZATIONS, or 501(c)(3) entities. This is a strict requirement. DO NOT include for-profit companies, corporations, or commercial contractors.**"
+            else:  # for-profit
+                type_requirement = "\n\n**CRITICAL TYPE REQUIREMENT: ONLY suggest FOR-PROFIT COMPANIES, CORPORATIONS, or COMMERCIAL CONTRACTORS. This is a strict requirement. DO NOT include academic institutions, universities, non-profits, or research centers.**"
             
             # Build size requirement
             size_requirement = ""
@@ -227,9 +235,9 @@ KEY PRIORITIES:
 REQUIRED TECHNICAL CAPABILITIES:
 {chr(10).join([f"• {cap.get('area', cap) if isinstance(cap, dict) else cap}" for cap in technical_capabilities[:5]])}
 
-SEARCH KEYWORDS: {', '.join(search_keywords[:10])}{size_requirement}
+SEARCH KEYWORDS: {', '.join(search_keywords[:10])}{type_requirement}{size_requirement}
 
-Based on the EXACT requirements above, suggest {max_companies} REAL companies that specialize in this specific domain. DO NOT suggest generic IT contractors unless they have specific expertise in these areas.
+Based on the EXACT requirements above, suggest EXACTLY {max_companies} REAL companies that specialize in this specific domain. DO NOT suggest generic IT contractors unless they have specific expertise in these areas. YOU MUST return exactly {max_companies} companies - no more, no less.
 
 For each company, provide:
 1. Company name (real companies with expertise in THIS specific domain)
