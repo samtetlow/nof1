@@ -436,62 +436,102 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
     search_keywords = list(set([kw for kw in search_keywords if kw not in stop_words]))[:20]
     themes["search_keywords"] = search_keywords
     
-    # === STEP 8: GENERATE OVERVIEW & KEY TAKEAWAYS ===
-    # Create concise 1-2 sentence summary
+    # === STEP 8: GENERATE OVERVIEW & KEY TOPICS ===
+    # Create detailed paragraph summary (3-5 sentences)
     summary_parts = []
     
-    # First sentence: What is this solicitation about?
+    # Sentence 1: What is this solicitation about? (Core problem/need)
     if themes["problem_statement"]:
-        summary_parts.append(themes["problem_statement"][:150])
+        summary_parts.append(themes["problem_statement"][:200])
     elif themes["problem_areas"]:
-        summary_parts.append(f"This solicitation seeks solutions for {themes['problem_areas'][0][:100]}")
+        summary_parts.append(f"This solicitation seeks innovative solutions to address {themes['problem_areas'][0][:150]}")
     else:
         # Extract first substantial sentence from text
-        sentences = [s.strip() for s in re.split(r'[.!?]', text[:500]) if len(s.strip()) > 40]
+        sentences = [s.strip() for s in re.split(r'[.!?]', text[:800]) if len(s.strip()) > 40]
         if sentences:
-            summary_parts.append(sentences[0][:150])
+            summary_parts.append(sentences[0][:200])
     
-    # Second sentence: What expertise is needed?
+    # Sentence 2: Technical capabilities and expertise needed
     if themes["technical_capabilities"]:
-        cap_names = [cap["area"] for cap in themes["technical_capabilities"][:2]]
-        summary_parts.append(f"Requires expertise in {' and '.join(cap_names)}")
+        if len(themes["technical_capabilities"]) >= 3:
+            cap_names = [cap["area"] for cap in themes["technical_capabilities"][:3]]
+            summary_parts.append(f"The program requires deep expertise in {', '.join(cap_names[:-1])}, and {cap_names[-1]}")
+        elif len(themes["technical_capabilities"]) == 2:
+            cap_names = [cap["area"] for cap in themes["technical_capabilities"][:2]]
+            summary_parts.append(f"The program requires expertise in {cap_names[0]} and {cap_names[1]}")
+        else:
+            summary_parts.append(f"The program requires expertise in {themes['technical_capabilities'][0]['area']}")
     
-    themes["overview"] = ". ".join(summary_parts) + "." if summary_parts else text[:200].strip() + "..."
+    # Sentence 3: Key priorities or requirements
+    if themes["key_priorities"]:
+        priority_text = themes["key_priorities"][0][:150]
+        summary_parts.append(f"Critical requirements include {priority_text.lower()}")
     
-    # Generate salient points (bullet format, short and impactful)
-    salient_points = []
+    # Sentence 4: Additional context from second problem area or priority
+    if len(themes["problem_areas"]) > 1:
+        second_problem = themes["problem_areas"][1][:120]
+        summary_parts.append(f"Additionally, the solicitation emphasizes {second_problem.lower()}")
+    elif len(themes["key_priorities"]) > 1:
+        second_priority = themes["key_priorities"][1][:120]
+        summary_parts.append(f"The program also prioritizes {second_priority.lower()}")
     
-    # Point 1: Core challenge/problem (short, punchy)
+    themes["overview"] = ". ".join(summary_parts) + "." if summary_parts else text[:400].strip() + "..."
+    
+    # Generate Key Topics (robust, descriptive)
+    key_topics = []
+    
+    # Topic 1: Primary Technical Domain
+    if themes["technical_capabilities"]:
+        cap = themes["technical_capabilities"][0]
+        cap_name = cap["area"]
+        # Add context about specific focus areas if available
+        focus_terms = cap.get("terms", [])[:3]
+        if focus_terms:
+            key_topics.append(f"{cap_name.title()}: Focus on {', '.join(focus_terms)}")
+        else:
+            key_topics.append(f"{cap_name.title()}: Core technical requirement for this program")
+    
+    # Topic 2: Core Problem/Challenge Area
     if themes["problem_areas"]:
         problem = themes["problem_areas"][0]
-        # Clean up and shorten
-        problem_short = problem.split(',')[0] if ',' in problem else problem
-        salient_points.append(problem_short[:80])
+        # Make it more descriptive
+        if len(problem) < 50:
+            key_topics.append(f"Challenge: {problem}")
+        else:
+            key_topics.append(f"Challenge: {problem[:100]}")
     
-    # Point 2: Key technical requirement
-    if themes["technical_capabilities"]:
-        cap = themes["technical_capabilities"][0]["area"]
-        salient_points.append(f"{cap.title()} capabilities required")
-    
-    # Point 3: Critical priority/requirement
-    if themes["key_priorities"] and len(themes["key_priorities"]) > 0:
+    # Topic 3: Critical Requirement/Priority
+    if themes["key_priorities"]:
         priority = themes["key_priorities"][0]
-        # Extract the core requirement, shorten
-        priority_short = priority.split(',')[0] if ',' in priority else priority
-        salient_points.append(priority_short[:80])
+        if len(priority) < 50:
+            key_topics.append(f"Requirement: {priority}")
+        else:
+            key_topics.append(f"Requirement: {priority[:100]}")
     
-    # Point 4: Additional technical capability (if available)
+    # Topic 4: Secondary Technical Domain
     if len(themes["technical_capabilities"]) > 1:
-        cap2 = themes["technical_capabilities"][1]["area"]
-        salient_points.append(f"{cap2.title()} experience needed")
+        cap2 = themes["technical_capabilities"][1]
+        cap2_name = cap2["area"]
+        focus_terms2 = cap2.get("terms", [])[:2]
+        if focus_terms2:
+            key_topics.append(f"{cap2_name.title()}: Including {', '.join(focus_terms2)}")
+        else:
+            key_topics.append(f"{cap2_name.title()}: Supporting technical capability")
     
-    # Point 5: Evaluation criteria (if available)
-    if themes["evaluation_factors"]:
+    # Topic 5: Secondary Problem Area or Evaluation Criteria
+    if len(themes["problem_areas"]) > 1:
+        problem2 = themes["problem_areas"][1]
+        key_topics.append(f"Additional Focus: {problem2[:100]}")
+    elif themes["evaluation_factors"]:
         eval_factor = themes["evaluation_factors"][0]
-        eval_short = eval_factor.split(',')[0] if ',' in eval_factor else eval_factor
-        salient_points.append(f"Evaluated on: {eval_short[:60]}")
+        key_topics.append(f"Evaluation Emphasis: {eval_factor[:100]}")
     
-    themes["key_takeaways"] = salient_points[:5]  # Max 5 salient points
+    # Topic 6: Third priority or additional context (if available)
+    if len(themes["key_priorities"]) > 1:
+        priority2 = themes["key_priorities"][1]
+        key_topics.append(f"Priority: {priority2[:100]}")
+    
+    themes["key_takeaways"] = key_topics[:6]  # Max 6 key topics
     
     return themes
 

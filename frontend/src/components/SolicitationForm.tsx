@@ -229,26 +229,51 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
                 <div className="flex-1">
                   <p className="text-sm font-semibold text-green-900 mb-3">Successfully Extracted</p>
                   
-                  {/* Solicitation Summary */}
+                  {/* Solicitation Summary - Detailed Paragraph */}
                   {parsedData.themes?.overview && (
-                    <div className="mb-3 p-4 bg-white bg-opacity-60 rounded-lg border border-green-300 shadow-sm">
-                      <p className="text-xs font-semibold text-green-900 uppercase tracking-wide mb-2">Summary</p>
-                      <p className="text-sm text-green-900 leading-relaxed">{parsedData.themes.overview}</p>
+                    <div className="mb-3 p-4 bg-white bg-opacity-70 rounded-lg border-l-4 border-green-500 shadow-sm">
+                      <p className="text-xs font-bold text-green-900 uppercase tracking-wide mb-2 flex items-center">
+                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                        </svg>
+                        Summary
+                      </p>
+                      <p className="text-sm text-gray-800 leading-relaxed text-justify">{parsedData.themes.overview}</p>
                     </div>
                   )}
                   
-                  {/* Salient Points */}
+                  {/* Key Topics - Robust Analysis */}
                   {parsedData.themes?.key_takeaways && parsedData.themes.key_takeaways.length > 0 && (
-                    <div className="mb-3 p-4 bg-white bg-opacity-60 rounded-lg border border-green-300 shadow-sm">
-                      <p className="text-xs font-semibold text-green-900 uppercase tracking-wide mb-2">Salient Points</p>
-                      <ul className="space-y-2">
-                        {parsedData.themes.key_takeaways.map((takeaway: string, idx: number) => (
-                          <li key={idx} className="text-sm text-green-800 flex items-start">
-                            <span className="mr-2 text-green-600 font-bold">•</span>
-                            <span className="leading-relaxed">{takeaway}</span>
-                          </li>
-                        ))}
-                      </ul>
+                    <div className="mb-3 p-4 bg-white bg-opacity-70 rounded-lg border-l-4 border-blue-500 shadow-sm">
+                      <p className="text-xs font-bold text-blue-900 uppercase tracking-wide mb-3 flex items-center">
+                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14" />
+                        </svg>
+                        Key Topics
+                      </p>
+                      <div className="space-y-2.5">
+                        {parsedData.themes.key_takeaways.map((topic: string, idx: number) => {
+                          // Parse topic to identify prefix (e.g., "Challenge:", "Requirement:")
+                          const colonIndex = topic.indexOf(':');
+                          const hasPrefix = colonIndex > 0 && colonIndex < 30;
+                          const prefix = hasPrefix ? topic.substring(0, colonIndex + 1) : '';
+                          const content = hasPrefix ? topic.substring(colonIndex + 1).trim() : topic;
+                          
+                          return (
+                            <div key={idx} className="flex items-start bg-blue-50 bg-opacity-50 rounded p-2.5 border border-blue-100">
+                              <span className="flex-shrink-0 w-6 h-6 bg-blue-500 text-white rounded-full flex items-center justify-center text-xs font-bold mr-2.5 mt-0.5">
+                                {idx + 1}
+                              </span>
+                              <div className="flex-1">
+                                {hasPrefix && (
+                                  <span className="text-xs font-bold text-blue-900 uppercase tracking-wide">{prefix} </span>
+                                )}
+                                <span className="text-sm text-gray-800 leading-relaxed">{content}</span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   )}
                   
