@@ -60,10 +60,10 @@ const Dashboard: React.FC = () => {
       {/* Page Header */}
       <div>
         <h2 className="text-3xl font-bold text-gray-900">
-          Solicitation Analysis Pipeline
+          Search for clients based on solicitations
         </h2>
         <p className="mt-2 text-sm text-gray-600">
-          Analyze government solicitations through our 6-module pipeline: Match → Enrich → Confirm → Validate
+          Develop client targets based on search and confirmation platform: n of 1
         </p>
       </div>
 
