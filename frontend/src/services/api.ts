@@ -107,6 +107,13 @@ export interface MatchResult {
     alignment_summary?: string;
     chain_of_thought: string[];
     company_info?: string;
+    findings?: {
+      company_info?: string;
+      capability_match?: string;
+      experience_assessment?: string;
+      strengths?: string[];
+      risk_factors?: string[];
+    };
   };
   score_components: Array<{
     component: string;

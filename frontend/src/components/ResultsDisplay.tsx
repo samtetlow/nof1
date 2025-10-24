@@ -197,6 +197,108 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ results, solicitationTe
           </div>
         )}
       </div>
+
+      {/* Comprehensive Results Table */}
+      <div className="bg-white rounded-lg shadow-sm p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-4">Complete Analysis Summary</h3>
+        <p className="text-sm text-gray-600 mb-4">Detailed breakdown of all companies analyzed for this solicitation</p>
+        
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                  Company Name
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                  Solicitation Name
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                  Subtopic Header
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                  Why a Match
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                  Analysis Steps
+                </th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {results.results.map((result, idx) => {
+                const solicitationName = results.solicitation_summary?.title || 'Solicitation';
+                const subtopic = result.confirmation_result?.findings?.capability_match || 
+                                result.description?.substring(0, 100) || 
+                                'Technical capabilities alignment';
+                const whyMatch = result.confirmation_result?.alignment_summary || 
+                                result.decision_rationale?.substring(0, 200) || 
+                                'Strong alignment with solicitation requirements based on company capabilities and experience.';
+                const analysisSteps = result.confirmation_result?.chain_of_thought || [];
+                
+                return (
+                  <tr key={result.company_id} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                    <td className="px-4 py-4 text-sm font-medium text-gray-900">
+                      <div className="flex flex-col">
+                        <span className="font-semibold">{result.company_name}</span>
+                        {result.website && (
+                          <a 
+                            href={result.website} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="text-xs text-blue-600 hover:text-blue-800 mt-1"
+                          >
+                            {result.website}
+                          </a>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 text-sm text-gray-700">
+                      {solicitationName}
+                    </td>
+                    <td className="px-4 py-4 text-sm text-gray-700">
+                      <div className="max-w-xs">
+                        {subtopic.length > 150 ? `${subtopic.substring(0, 150)}...` : subtopic}
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 text-sm text-gray-700">
+                      <div className="max-w-md">
+                        {whyMatch.length > 250 ? `${whyMatch.substring(0, 250)}...` : whyMatch}
+                      </div>
+                    </td>
+                    <td className="px-4 py-4 text-sm text-gray-700">
+                      <div className="max-w-md">
+                        {analysisSteps.length > 0 ? (
+                          <ul className="space-y-1">
+                            {analysisSteps.slice(0, 3).map((step, stepIdx) => (
+                              <li key={stepIdx} className="text-xs">
+                                <span className="font-medium">{stepIdx + 1}.</span> {step.length > 100 ? `${step.substring(0, 100)}...` : step}
+                              </li>
+                            ))}
+                            {analysisSteps.length > 3 && (
+                              <li className="text-xs text-gray-500 italic">
+                                +{analysisSteps.length - 3} more steps...
+                              </li>
+                            )}
+                          </ul>
+                        ) : (
+                          <span className="text-xs text-gray-500">Analysis in progress</span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        
+        {/* Table Footer */}
+        <div className="mt-4 pt-4 border-t border-gray-200">
+          <p className="text-xs text-gray-500">
+            Table showing {results.results.length} companies analyzed for "{results.solicitation_summary?.title || 'this solicitation'}"
+          </p>
+        </div>
+      </div>
     </div>
   );
 };
