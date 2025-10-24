@@ -227,25 +227,25 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 <div className="flex-1">
-                  <p className="text-sm font-semibold text-green-900 mb-2">Successfully Extracted</p>
+                  <p className="text-sm font-semibold text-green-900 mb-3">Successfully Extracted</p>
                   
-                  {/* Overview Section */}
+                  {/* Solicitation Summary */}
                   {parsedData.themes?.overview && (
-                    <div className="mb-3 p-3 bg-white bg-opacity-50 rounded border border-green-200">
-                      <p className="text-xs font-semibold text-green-900 mb-1">Overview:</p>
-                      <p className="text-sm text-green-800">{parsedData.themes.overview}</p>
+                    <div className="mb-3 p-4 bg-white bg-opacity-60 rounded-lg border border-green-300 shadow-sm">
+                      <p className="text-xs font-semibold text-green-900 uppercase tracking-wide mb-2">Summary</p>
+                      <p className="text-sm text-green-900 leading-relaxed">{parsedData.themes.overview}</p>
                     </div>
                   )}
                   
-                  {/* Key Takeaways */}
+                  {/* Salient Points */}
                   {parsedData.themes?.key_takeaways && parsedData.themes.key_takeaways.length > 0 && (
-                    <div className="mb-3 p-3 bg-white bg-opacity-50 rounded border border-green-200">
-                      <p className="text-xs font-semibold text-green-900 mb-2">Key Takeaways:</p>
-                      <ul className="space-y-1">
+                    <div className="mb-3 p-4 bg-white bg-opacity-60 rounded-lg border border-green-300 shadow-sm">
+                      <p className="text-xs font-semibold text-green-900 uppercase tracking-wide mb-2">Salient Points</p>
+                      <ul className="space-y-2">
                         {parsedData.themes.key_takeaways.map((takeaway: string, idx: number) => (
                           <li key={idx} className="text-sm text-green-800 flex items-start">
-                            <span className="mr-2">•</span>
-                            <span>{takeaway}</span>
+                            <span className="mr-2 text-green-600 font-bold">•</span>
+                            <span className="leading-relaxed">{takeaway}</span>
                           </li>
                         ))}
                       </ul>

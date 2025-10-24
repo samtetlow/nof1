@@ -437,40 +437,61 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
     themes["search_keywords"] = search_keywords
     
     # === STEP 8: GENERATE OVERVIEW & KEY TAKEAWAYS ===
-    # Create executive summary for quick understanding
-    overview_parts = []
-    if themes["problem_statement"]:
-        overview_parts.append(themes["problem_statement"])
-    elif themes["problem_areas"]:
-        overview_parts.append(f"This solicitation addresses {themes['problem_areas'][0]}")
+    # Create concise 1-2 sentence summary
+    summary_parts = []
     
+    # First sentence: What is this solicitation about?
+    if themes["problem_statement"]:
+        summary_parts.append(themes["problem_statement"][:150])
+    elif themes["problem_areas"]:
+        summary_parts.append(f"This solicitation seeks solutions for {themes['problem_areas'][0][:100]}")
+    else:
+        # Extract first substantial sentence from text
+        sentences = [s.strip() for s in re.split(r'[.!?]', text[:500]) if len(s.strip()) > 40]
+        if sentences:
+            summary_parts.append(sentences[0][:150])
+    
+    # Second sentence: What expertise is needed?
     if themes["technical_capabilities"]:
         cap_names = [cap["area"] for cap in themes["technical_capabilities"][:2]]
-        overview_parts.append(f"seeking expertise in {' and '.join(cap_names)}")
+        summary_parts.append(f"Requires expertise in {' and '.join(cap_names)}")
     
-    themes["overview"] = ". ".join(overview_parts) if overview_parts else text[:200].strip() + "..."
+    themes["overview"] = ". ".join(summary_parts) + "." if summary_parts else text[:200].strip() + "..."
     
-    # Generate key takeaways (top 3-5 critical points)
-    key_takeaways = []
+    # Generate salient points (bullet format, short and impactful)
+    salient_points = []
     
-    # Takeaway 1: Primary problem/need
+    # Point 1: Core challenge/problem (short, punchy)
     if themes["problem_areas"]:
-        key_takeaways.append(f"Primary Focus: {themes['problem_areas'][0][:100]}")
+        problem = themes["problem_areas"][0]
+        # Clean up and shorten
+        problem_short = problem.split(',')[0] if ',' in problem else problem
+        salient_points.append(problem_short[:80])
     
-    # Takeaway 2: Required capabilities
+    # Point 2: Key technical requirement
     if themes["technical_capabilities"]:
-        cap_list = [cap["area"] for cap in themes["technical_capabilities"][:3]]
-        key_takeaways.append(f"Required Expertise: {', '.join(cap_list)}")
+        cap = themes["technical_capabilities"][0]["area"]
+        salient_points.append(f"{cap.title()} capabilities required")
     
-    # Takeaway 3: Top priority
-    if themes["key_priorities"]:
-        key_takeaways.append(f"Key Requirement: {themes['key_priorities'][0][:100]}")
+    # Point 3: Critical priority/requirement
+    if themes["key_priorities"] and len(themes["key_priorities"]) > 0:
+        priority = themes["key_priorities"][0]
+        # Extract the core requirement, shorten
+        priority_short = priority.split(',')[0] if ',' in priority else priority
+        salient_points.append(priority_short[:80])
     
-    # Takeaway 4: Evaluation focus (if available)
+    # Point 4: Additional technical capability (if available)
+    if len(themes["technical_capabilities"]) > 1:
+        cap2 = themes["technical_capabilities"][1]["area"]
+        salient_points.append(f"{cap2.title()} experience needed")
+    
+    # Point 5: Evaluation criteria (if available)
     if themes["evaluation_factors"]:
-        key_takeaways.append(f"Evaluation Factor: {themes['evaluation_factors'][0][:100]}")
+        eval_factor = themes["evaluation_factors"][0]
+        eval_short = eval_factor.split(',')[0] if ',' in eval_factor else eval_factor
+        salient_points.append(f"Evaluated on: {eval_short[:60]}")
     
-    themes["key_takeaways"] = key_takeaways[:5]  # Max 5 takeaways
+    themes["key_takeaways"] = salient_points[:5]  # Max 5 salient points
     
     return themes
 
