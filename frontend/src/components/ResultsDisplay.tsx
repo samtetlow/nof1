@@ -203,23 +203,23 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ results, solicitationTe
         <h3 className="text-lg font-semibold text-gray-900 mb-4">Complete Analysis Summary</h3>
         <p className="text-sm text-gray-600 mb-4">Detailed breakdown of all companies analyzed for this solicitation</p>
         
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
+        <div className="overflow-x-auto -mx-6 px-6">
+          <table className="min-w-full divide-y divide-gray-200" style={{ minWidth: '1200px' }}>
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider whitespace-nowrap">
                   Company Name
                 </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider whitespace-nowrap">
+                  Company URL
+                </th>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider whitespace-nowrap">
                   Solicitation Name
                 </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
-                  Subtopic Header
-                </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider whitespace-nowrap">
                   Why a Match
                 </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider">
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider whitespace-nowrap">
                   Analysis Steps
                 </th>
               </tr>
@@ -227,9 +227,6 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ results, solicitationTe
             <tbody className="bg-white divide-y divide-gray-200">
               {results.results.map((result, idx) => {
                 const solicitationName = results.solicitation_summary?.title || 'Solicitation';
-                const subtopic = result.confirmation_result?.findings?.capability_match || 
-                                result.description?.substring(0, 100) || 
-                                'Technical capabilities alignment';
                 const whyMatch = result.confirmation_result?.alignment_summary || 
                                 result.decision_rationale?.substring(0, 200) || 
                                 'Strong alignment with solicitation requirements based on company capabilities and experience.';
@@ -237,36 +234,35 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ results, solicitationTe
                 
                 return (
                   <tr key={result.company_id} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                    <td className="px-4 py-4 text-sm font-medium text-gray-900">
-                      <div className="flex flex-col">
-                        <span className="font-semibold">{result.company_name}</span>
-                        {result.website && (
-                          <a 
-                            href={result.website} 
-                            target="_blank" 
-                            rel="noopener noreferrer"
-                            className="text-xs text-blue-600 hover:text-blue-800 mt-1"
-                          >
-                            {result.website}
-                          </a>
-                        )}
-                      </div>
+                    <td className="px-4 py-4 text-sm font-medium text-gray-900 whitespace-nowrap">
+                      <span className="font-semibold">{result.company_name}</span>
                     </td>
                     <td className="px-4 py-4 text-sm text-gray-700">
-                      {solicitationName}
+                      {result.website ? (
+                        <a 
+                          href={result.website} 
+                          target="_blank" 
+                          rel="noopener noreferrer"
+                          className="text-blue-600 hover:text-blue-800 hover:underline"
+                        >
+                          {result.website}
+                        </a>
+                      ) : (
+                        <span className="text-gray-400 text-xs">Not available</span>
+                      )}
                     </td>
                     <td className="px-4 py-4 text-sm text-gray-700">
                       <div className="max-w-xs">
-                        {subtopic.length > 150 ? `${subtopic.substring(0, 150)}...` : subtopic}
+                        {solicitationName}
                       </div>
                     </td>
                     <td className="px-4 py-4 text-sm text-gray-700">
-                      <div className="max-w-md">
+                      <div className="max-w-lg">
                         {whyMatch.length > 250 ? `${whyMatch.substring(0, 250)}...` : whyMatch}
                       </div>
                     </td>
                     <td className="px-4 py-4 text-sm text-gray-700">
-                      <div className="max-w-md">
+                      <div className="max-w-lg">
                         {analysisSteps.length > 0 ? (
                           <ul className="space-y-1">
                             {analysisSteps.slice(0, 3).map((step, stepIdx) => (
