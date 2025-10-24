@@ -155,7 +155,11 @@ class ChatGPTSource:
     def __init__(self, api_key: str, model: str = "gpt-3.5-turbo"):
         if openai is None:
             raise ImportError("openai library not installed")
-        self.client = openai.OpenAI(api_key=api_key)
+        self.client = openai.OpenAI(
+            api_key=api_key,
+            timeout=60.0,  # 60 second timeout
+            max_retries=3  # Retry failed requests up to 3 times
+        )
         self.model = model
     
     async def get_company_data(self, company_name: str, company_data: Optional[Dict] = None) -> Dict:

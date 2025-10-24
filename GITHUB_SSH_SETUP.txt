@@ -1,0 +1,98 @@
+================================================================================
+                    GITHUB SSH SETUP - STEP BY STEP GUIDE
+================================================================================
+
+✅ STEP 1: SSH KEY GENERATED
+Your SSH key has been created and copied to your clipboard!
+
+Your public key is:
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEWJa6/QAswq1BPo6njEU88CLDp4sD15rEJYJMaVSS9u samtetlow@github
+
+================================================================================
+
+🔑 STEP 2: ADD SSH KEY TO GITHUB
+
+1. Go to: https://github.com/settings/keys
+
+2. Click the green "New SSH key" button
+
+3. Fill in the form:
+   Title: "MacBook Pro - N-of-1 Platform" (or any name you like)
+   Key type: Authentication Key
+   Key: [The key is already in your clipboard - just paste it with Cmd+V]
+
+4. Click "Add SSH key"
+
+5. You may need to confirm with your GitHub password
+
+================================================================================
+
+🔧 STEP 3: UPDATE GIT REMOTE TO USE SSH
+
+Run these commands in your terminal:
+
+cd /Users/samtetlow/Cursor/nof1
+git remote set-url origin git@github.com:samtetlow/nof1.git
+
+================================================================================
+
+✅ STEP 4: TEST SSH CONNECTION
+
+Run this to verify it works:
+
+ssh -T git@github.com
+
+You should see:
+"Hi samtetlow! You've successfully authenticated, but GitHub does not provide shell access."
+
+================================================================================
+
+🚀 STEP 5: PUSH YOUR CODE
+
+Now you can push to GitHub:
+
+cd /Users/samtetlow/Cursor/nof1
+git push origin main
+
+================================================================================
+
+📋 ALL COMMANDS IN ONE PLACE (copy/paste these):
+
+# Update remote to SSH
+cd /Users/samtetlow/Cursor/nof1
+git remote set-url origin git@github.com:samtetlow/nof1.git
+
+# Test connection
+ssh -T git@github.com
+
+# Push your code
+git push origin main
+
+================================================================================
+
+❓ TROUBLESHOOTING
+
+If you get "Permission denied (publickey)":
+- Make sure you added the SSH key to GitHub (Step 2)
+- Verify the key was added: ssh-add -l
+- If needed, add it manually: ssh-add ~/.ssh/id_ed25519
+
+If you get "Could not resolve hostname":
+- Check your internet connection
+- Try: ping github.com
+
+If you get conflicts on push:
+- Pull first: git pull origin main --rebase
+- Then push: git push origin main
+
+================================================================================
+
+🔐 YOUR SSH KEY LOCATIONS
+
+Private key (NEVER share): ~/.ssh/id_ed25519
+Public key (safe to share):  ~/.ssh/id_ed25519.pub
+
+Keep your private key secure! It's like your password.
+
+================================================================================
+

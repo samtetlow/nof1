@@ -1,4 +1,4 @@
-import axios from 'axios';
+import axios, { AxiosError } from 'axios';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -7,7 +7,37 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  timeout: 120000, // 2 minute timeout for long-running operations
+  validateStatus: (status) => status < 500, // Don't throw on 4xx errors
 });
+
+// Retry logic for network errors
+const MAX_RETRIES = 3;
+const RETRY_DELAY = 1000; // 1 second
+
+const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+async function retryRequest<T>(
+  fn: () => Promise<T>,
+  retries: number = MAX_RETRIES,
+  delay: number = RETRY_DELAY
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (retries > 0 && axios.isAxiosError(error)) {
+      // Retry on network errors or 5xx errors
+      if (error.code === 'ECONNABORTED' || 
+          error.code === 'ERR_NETWORK' ||
+          (error.response && error.response.status >= 500)) {
+        console.warn(`Request failed, retrying... (${MAX_RETRIES - retries + 1}/${MAX_RETRIES})`);
+        await sleep(delay);
+        return retryRequest(fn, retries - 1, delay * 2); // Exponential backoff
+      }
+    }
+    throw error;
+  }
+}
 
 // Types
 export interface Company {
@@ -161,15 +191,22 @@ export const apiService = {
     companyType: 'for-profit' | 'academic-nonprofit' = 'for-profit',
     companySize: 'all' | 'small' | 'large' = 'all'
   ): Promise<PipelineResponse> {
-    const response = await api.post('/api/full-pipeline', {
-      solicitation,
-      company_id: companyId,
-      enrich,
-      top_k: topK,
-      company_type: companyType,
-      company_size: companySize,
+    return retryRequest(async () => {
+      const response = await api.post('/api/full-pipeline', {
+        solicitation,
+        company_id: companyId,
+        enrich,
+        top_k: topK,
+        company_type: companyType,
+        company_size: companySize,
+      });
+      
+      if (response.status >= 400) {
+        throw new Error(response.data?.detail || 'Pipeline request failed');
+      }
+      
+      return response.data;
     });
-    return response.data;
   },
 
   async matchWithConfirmation(

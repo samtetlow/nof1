@@ -952,7 +952,12 @@ def create_solicitation(sol: SolicitationIn):
         rec = SolicitationORM(job_id=job_id, **payload)
         db.add(rec)
         db.commit()
+        db.refresh(rec)  # Refresh to get any DB-generated fields
         return {"job_id": job_id}
+    except Exception as e:
+        db.rollback()  # Rollback on error
+        logger.error(f"Error creating solicitation: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to create solicitation: {str(e)}")
     finally:
         db.close()
 
@@ -1220,6 +1225,16 @@ async def full_pipeline(
     Search for companies matching solicitation themes and return top matches
     """
     try:
+        # Input validation
+        if top_k < 1 or top_k > 50:
+            raise HTTPException(400, "top_k must be between 1 and 50")
+        
+        if company_type not in ["for-profit", "academic-nonprofit"]:
+            raise HTTPException(400, "Invalid company_type. Must be 'for-profit' or 'academic-nonprofit'")
+        
+        if company_size not in ["all", "small", "large"]:
+            raise HTTPException(400, "Invalid company_size. Must be 'all', 'small', or 'large'")
+        
         # Parse solicitation
         sol_dict = solicitation.model_dump()
         if solicitation.raw_text:
@@ -1231,8 +1246,13 @@ async def full_pipeline(
         logger.info("Extracting themes from solicitation for company search")
         raw_text = solicitation.raw_text or ""
         
-        if not raw_text or len(raw_text.strip()) < 50:
-            raise HTTPException(400, "Insufficient solicitation text provided. Please upload a valid document or paste the full text.")
+        # Sanitize and validate input
+        raw_text = raw_text.strip()
+        if not raw_text or len(raw_text) < 50:
+            raise HTTPException(400, "Insufficient solicitation text provided. Please upload a valid document or paste the full text (minimum 50 characters).")
+        
+        if len(raw_text) > 1000000:  # 1MB text limit
+            raise HTTPException(400, "Solicitation text too large. Please ensure the document is under 1MB.")
         
         themes = analyze_solicitation_themes(raw_text)
         
@@ -1430,6 +1450,19 @@ async def confirm_single_company(
     Helper function to confirm a single company.
     Returns confirmation result with scores and recommendation.
     """
+    # Input validation
+    if not company_name or not company_name.strip():
+        logger.warning("Empty company name provided to confirmation")
+        return {
+            'company_name': 'Unknown',
+            'is_confirmed': False,
+            'confidence_score': 0.0,
+            'recommendation': 'reconsider',
+            'reasoning': 'Invalid company name',
+            'chain_of_thought': [],
+            'findings': {}
+        }
+    
     try:
         logger.info(f"Confirming: {company_name}")
         
