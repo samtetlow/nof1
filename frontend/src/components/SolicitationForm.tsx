@@ -245,10 +245,7 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
                   {/* Key Topics - Clean Enumerated List */}
                   {parsedData.themes?.key_takeaways && parsedData.themes.key_takeaways.length > 0 && (
                     <div className="mb-3 p-4 bg-white bg-opacity-70 rounded-lg border-l-4 border-blue-500 shadow-sm">
-                      <p className="text-xs font-bold text-blue-900 uppercase tracking-wide mb-3 flex items-center">
-                        <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 20l4-16m2 16l4-16M6 9h14M4 15h14" />
-                        </svg>
+                      <p className="text-xs font-bold text-blue-900 uppercase tracking-wide mb-3">
                         Key Topics
                       </p>
                       <ul className="space-y-2 list-decimal list-inside">
