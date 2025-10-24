@@ -252,27 +252,16 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
                         Key Topics
                       </p>
                       <div className="space-y-2.5">
-                        {parsedData.themes.key_takeaways.map((topic: string, idx: number) => {
-                          // Parse topic to identify prefix (e.g., "Challenge:", "Requirement:")
-                          const colonIndex = topic.indexOf(':');
-                          const hasPrefix = colonIndex > 0 && colonIndex < 30;
-                          const prefix = hasPrefix ? topic.substring(0, colonIndex + 1) : '';
-                          const content = hasPrefix ? topic.substring(colonIndex + 1).trim() : topic;
-                          
-                          return (
-                            <div key={idx} className="flex items-start bg-blue-50 bg-opacity-50 rounded p-2.5 border border-blue-100">
-                              <span className="flex-shrink-0 w-6 h-6 bg-blue-500 text-white rounded-full flex items-center justify-center text-xs font-bold mr-2.5 mt-0.5">
-                                {idx + 1}
-                              </span>
-                              <div className="flex-1">
-                                {hasPrefix && (
-                                  <span className="text-xs font-bold text-blue-900 uppercase tracking-wide">{prefix} </span>
-                                )}
-                                <span className="text-sm text-gray-800 leading-relaxed">{content}</span>
-                              </div>
+                        {parsedData.themes.key_takeaways.map((topic: string, idx: number) => (
+                          <div key={idx} className="flex items-start bg-blue-50 bg-opacity-50 rounded-lg p-3 border border-blue-100">
+                            <span className="flex-shrink-0 w-6 h-6 bg-blue-500 text-white rounded-full flex items-center justify-center text-xs font-bold mr-3 mt-0.5">
+                              {idx + 1}
+                            </span>
+                            <div className="flex-1">
+                              <p className="text-sm text-gray-800 leading-relaxed">{topic}</p>
                             </div>
-                          );
-                        })}
+                          </div>
+                        ))}
                       </div>
                     </div>
                   )}
