@@ -477,8 +477,33 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
     
     themes["overview"] = ". ".join(summary_parts) + "." if summary_parts else text[:400].strip() + "..."
     
-    # Generate Key Topics (robust, comprehensive content)
+    # Generate Key Topics (robust, comprehensive content with complete sentences)
     key_topics = []
+    
+    def ensure_complete_sentence(text: str) -> str:
+        """Ensure the topic is a complete, standalone sentence"""
+        text = text.strip()
+        
+        # Check if it starts with a capital letter
+        if text and not text[0].isupper():
+            text = text[0].upper() + text[1:]
+        
+        # Check if it ends with proper punctuation
+        if text and text[-1] not in '.!?':
+            text = text + '.'
+        
+        # Check if it has a subject and verb (basic check)
+        # If it starts with a gerund or noun without context, add a subject
+        words = text.split()
+        if len(words) > 0:
+            first_word = words[0].lower()
+            # If starts with -ing or is a noun phrase without "the/this/these", make it complete
+            if first_word.endswith('ing') and len(words) > 2:
+                # Check if there's no clear subject
+                if not any(w.lower() in ['the', 'this', 'these', 'those', 'program', 'solicitation', 'project'] for w in words[:3]):
+                    text = f"The program requires {text[0].lower()}{text[1:]}"
+        
+        return text
     
     # Topic 1: Primary Technical Domain - Detailed description with focus areas
     if themes["technical_capabilities"]:
@@ -486,29 +511,34 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
         cap_name = cap["area"]
         focus_terms = cap.get("terms", [])[:4]
         if focus_terms:
-            # Create comprehensive topic with technical specifics
-            key_topics.append(f"{cap_name.title()} expertise with emphasis on {', '.join(focus_terms)}, and related technical capabilities essential for program success")
+            topic = f"The program requires {cap_name.lower()} expertise with emphasis on {', '.join(focus_terms)}, and related technical capabilities essential for success"
         else:
-            key_topics.append(f"{cap_name.title()} capabilities are required as the primary technical foundation for this program, including relevant tools, methodologies, and proven experience")
+            topic = f"The solicitation requires {cap_name.lower()} capabilities as the primary technical foundation, including relevant tools, methodologies, and proven experience"
+        key_topics.append(ensure_complete_sentence(topic))
     
     # Topic 2: Core Problem/Challenge - Full problem statement
     if themes["problem_areas"]:
         problem = themes["problem_areas"][0]
         # Provide full context without truncation for better understanding
         if len(problem) > 150:
-            # If very long, get first complete phrase
-            key_topics.append(problem[:150] + " as the central challenge this solicitation aims to address")
+            topic = f"The central challenge this solicitation aims to address is {problem[:150].lower()}"
         else:
-            key_topics.append(problem + " representing the core technical challenge that requires innovative solutions")
+            # Check if problem already forms a complete sentence
+            if problem[0].isupper() and problem[-1] in '.!?':
+                topic = f"The core technical challenge is: {problem}"
+            else:
+                topic = f"This solicitation addresses {problem.lower()} as the core technical challenge that requires innovative solutions"
+        key_topics.append(ensure_complete_sentence(topic))
     
     # Topic 3: Critical Requirements - Expanded priority description
     if themes["key_priorities"]:
         priority = themes["key_priorities"][0]
         # Add context about why this is critical
         if "must" in priority.lower() or "shall" in priority.lower() or "required" in priority.lower():
-            key_topics.append(priority + " as a mandatory program requirement")
+            topic = f"A mandatory program requirement is to {priority.lower()}" if not priority[0].isupper() else priority
         else:
-            key_topics.append(priority + " representing a critical success factor for the program")
+            topic = f"The program prioritizes {priority.lower()} as a critical success factor" if not priority[0].isupper() else priority
+        key_topics.append(ensure_complete_sentence(topic))
     
     # Topic 4: Secondary Technical Domain - Include complementary capabilities
     if len(themes["technical_capabilities"]) > 1:
@@ -516,30 +546,35 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
         cap2_name = cap2["area"]
         focus_terms2 = cap2.get("terms", [])[:3]
         if focus_terms2:
-            key_topics.append(f"Complementary {cap2_name.lower()} capabilities including {', '.join(focus_terms2)} to support integrated solution development")
+            topic = f"Complementary {cap2_name.lower()} capabilities are needed, including {', '.join(focus_terms2)}, to support integrated solution development"
         else:
-            key_topics.append(f"Additional technical expertise in {cap2_name.lower()} as a supporting capability that enhances overall solution effectiveness")
+            topic = f"Additional technical expertise in {cap2_name.lower()} serves as a supporting capability that enhances overall solution effectiveness"
+        key_topics.append(ensure_complete_sentence(topic))
     
     # Topic 5: Secondary Problem Area - Additional challenge context
     if len(themes["problem_areas"]) > 1:
         problem2 = themes["problem_areas"][1]
-        key_topics.append(problem2 + " as an important secondary consideration that impacts overall program objectives")
+        topic = f"An important secondary consideration is {problem2.lower()}, which impacts overall program objectives"
+        key_topics.append(ensure_complete_sentence(topic))
     
     # Topic 6: Additional Priority - Third-tier requirements
     if len(themes["key_priorities"]) > 1:
         priority2 = themes["key_priorities"][1]
-        key_topics.append(priority2 + " providing additional program direction and evaluation criteria")
+        topic = f"The solicitation also emphasizes {priority2.lower()}, providing additional program direction and evaluation criteria"
+        key_topics.append(ensure_complete_sentence(topic))
     
     # Topic 7: Evaluation Criteria - How proposals are assessed (if not already covered)
     if themes["evaluation_factors"] and len(key_topics) < 6:
         eval_factor = themes["evaluation_factors"][0]
-        key_topics.append(f"Proposals will be evaluated based on {eval_factor.lower()} demonstrating the importance of this criterion in selection")
+        topic = f"Proposals will be evaluated based on {eval_factor.lower()}, demonstrating the importance of this criterion in the selection process"
+        key_topics.append(ensure_complete_sentence(topic))
     
     # Topic 8: Third technical capability (if available and space permits)
     if len(themes["technical_capabilities"]) > 2 and len(key_topics) < 6:
         cap3 = themes["technical_capabilities"][2]
         cap3_name = cap3["area"]
-        key_topics.append(f"Tertiary expertise in {cap3_name.lower()} may provide competitive advantages and contribute to comprehensive solution delivery")
+        topic = f"Tertiary expertise in {cap3_name.lower()} may provide competitive advantages and contribute to comprehensive solution delivery"
+        key_topics.append(ensure_complete_sentence(topic))
     
     themes["key_takeaways"] = key_topics[:6]  # Max 6 key topics
     

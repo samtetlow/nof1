@@ -242,7 +242,7 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
                     </div>
                   )}
                   
-                  {/* Key Topics - Robust Analysis */}
+                  {/* Key Topics - Clean Enumerated List */}
                   {parsedData.themes?.key_takeaways && parsedData.themes.key_takeaways.length > 0 && (
                     <div className="mb-3 p-4 bg-white bg-opacity-70 rounded-lg border-l-4 border-blue-500 shadow-sm">
                       <p className="text-xs font-bold text-blue-900 uppercase tracking-wide mb-3 flex items-center">
@@ -251,18 +251,13 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
                         </svg>
                         Key Topics
                       </p>
-                      <div className="space-y-2.5">
+                      <ul className="space-y-2 list-decimal list-inside">
                         {parsedData.themes.key_takeaways.map((topic: string, idx: number) => (
-                          <div key={idx} className="flex items-start bg-blue-50 bg-opacity-50 rounded-lg p-3 border border-blue-100">
-                            <span className="flex-shrink-0 w-6 h-6 bg-blue-500 text-white rounded-full flex items-center justify-center text-xs font-bold mr-3 mt-0.5">
-                              {idx + 1}
-                            </span>
-                            <div className="flex-1">
-                              <p className="text-sm text-gray-800 leading-relaxed">{topic}</p>
-                            </div>
-                          </div>
+                          <li key={idx} className="text-sm text-gray-800 leading-relaxed pl-2">
+                            {topic}
+                          </li>
                         ))}
-                      </div>
+                      </ul>
                     </div>
                   )}
                   
