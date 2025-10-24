@@ -228,6 +228,30 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
                 </svg>
                 <div className="flex-1">
                   <p className="text-sm font-semibold text-green-900 mb-2">Successfully Extracted</p>
+                  
+                  {/* Overview Section */}
+                  {parsedData.themes?.overview && (
+                    <div className="mb-3 p-3 bg-white bg-opacity-50 rounded border border-green-200">
+                      <p className="text-xs font-semibold text-green-900 mb-1">Overview:</p>
+                      <p className="text-sm text-green-800">{parsedData.themes.overview}</p>
+                    </div>
+                  )}
+                  
+                  {/* Key Takeaways */}
+                  {parsedData.themes?.key_takeaways && parsedData.themes.key_takeaways.length > 0 && (
+                    <div className="mb-3 p-3 bg-white bg-opacity-50 rounded border border-green-200">
+                      <p className="text-xs font-semibold text-green-900 mb-2">Key Takeaways:</p>
+                      <ul className="space-y-1">
+                        {parsedData.themes.key_takeaways.map((takeaway: string, idx: number) => (
+                          <li key={idx} className="text-sm text-green-800 flex items-start">
+                            <span className="mr-2">•</span>
+                            <span>{takeaway}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  
                   <div className="space-y-1 text-sm text-green-800">
                     {parsedData.title && <p><span className="font-medium">Title:</span> {parsedData.title}</p>}
                     {parsedData.agency && <p><span className="font-medium">Agency:</span> {parsedData.agency}</p>}

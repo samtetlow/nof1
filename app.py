@@ -238,6 +238,8 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
     
     # Extract key themes and priorities
     themes = {
+        "overview": "",  # Executive summary of the solicitation
+        "key_takeaways": [],  # Top 3-5 salient points for quick understanding
         "problem_statement": "",  # The core problem to solve
         "problem_areas": [],  # Specific pain points (HIGHEST PRIORITY)
         "key_priorities": [],  # Must-have requirements
@@ -433,6 +435,42 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
     }
     search_keywords = list(set([kw for kw in search_keywords if kw not in stop_words]))[:20]
     themes["search_keywords"] = search_keywords
+    
+    # === STEP 8: GENERATE OVERVIEW & KEY TAKEAWAYS ===
+    # Create executive summary for quick understanding
+    overview_parts = []
+    if themes["problem_statement"]:
+        overview_parts.append(themes["problem_statement"])
+    elif themes["problem_areas"]:
+        overview_parts.append(f"This solicitation addresses {themes['problem_areas'][0]}")
+    
+    if themes["technical_capabilities"]:
+        cap_names = [cap["area"] for cap in themes["technical_capabilities"][:2]]
+        overview_parts.append(f"seeking expertise in {' and '.join(cap_names)}")
+    
+    themes["overview"] = ". ".join(overview_parts) if overview_parts else text[:200].strip() + "..."
+    
+    # Generate key takeaways (top 3-5 critical points)
+    key_takeaways = []
+    
+    # Takeaway 1: Primary problem/need
+    if themes["problem_areas"]:
+        key_takeaways.append(f"Primary Focus: {themes['problem_areas'][0][:100]}")
+    
+    # Takeaway 2: Required capabilities
+    if themes["technical_capabilities"]:
+        cap_list = [cap["area"] for cap in themes["technical_capabilities"][:3]]
+        key_takeaways.append(f"Required Expertise: {', '.join(cap_list)}")
+    
+    # Takeaway 3: Top priority
+    if themes["key_priorities"]:
+        key_takeaways.append(f"Key Requirement: {themes['key_priorities'][0][:100]}")
+    
+    # Takeaway 4: Evaluation focus (if available)
+    if themes["evaluation_factors"]:
+        key_takeaways.append(f"Evaluation Factor: {themes['evaluation_factors'][0][:100]}")
+    
+    themes["key_takeaways"] = key_takeaways[:5]  # Max 5 takeaways
     
     return themes
 
@@ -1495,6 +1533,7 @@ TASK: Perform a step-by-step analysis:
 4. What are the strengths of this match?
 5. What are potential risk factors or gaps?
 6. Final recommendation: proceed, reconsider, or reject?
+7. Write a client-facing paragraph explaining why this company aligns with the solicitation
 
 Provide your response as JSON with this structure:
 {{
@@ -1502,6 +1541,7 @@ Provide your response as JSON with this structure:
   "confidence_score": float (0-1),
   "recommendation": "proceed" | "reconsider" | "reject",
   "reasoning": "brief summary",
+  "alignment_summary": "2-3 sentence client-facing paragraph explaining why this company is a strong match for the solicitation, highlighting their relevant capabilities and experience",
   "chain_of_thought": ["step 1 analysis", "step 2 analysis", ...],
   "findings": {{
     "company_info": "brief company summary based on your knowledge",
@@ -1512,7 +1552,7 @@ Provide your response as JSON with this structure:
   }}
 }}
 
-Be honest and objective. If there are concerns, state them clearly."""
+Be honest and objective. If there are concerns, state them clearly. The alignment_summary should be professional and client-ready."""
 
         confirmation_response = chatgpt_source.client.chat.completions.create(
             model=chatgpt_source.model,

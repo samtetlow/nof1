@@ -104,6 +104,7 @@ export interface MatchResult {
     is_confirmed: boolean;
     confidence_score: number;
     recommendation: string;
+    alignment_summary?: string;
     chain_of_thought: string[];
     company_info?: string;
   };
