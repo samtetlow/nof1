@@ -1,0 +1,34 @@
+{
+  "data_sources": {
+    "google": {
+      "api_key": "YOUR_GOOGLE_API_KEY_HERE",
+      "search_engine_id": "YOUR_SEARCH_ENGINE_ID_HERE"
+    },
+    "anthropic": {
+      "api_key": "YOUR_ANTHROPIC_API_KEY_HERE"
+    },
+    "openai": {
+      "api_key": "YOUR_OPENAI_API_KEY_HERE"
+    },
+    "hubspot": {
+      "api_key": "YOUR_HUBSPOT_API_KEY_HERE"
+    },
+    "pitchbook": {
+      "api_key": "YOUR_PITCHBOOK_API_KEY_HERE"
+    },
+    "usaspending": {
+      "enabled": true
+    },
+    "nih": {
+      "enabled": true
+    },
+    "sbir": {
+      "enabled": true
+    }
+  },
+  "search_settings": {
+    "max_results_per_source": 10,
+    "timeout_seconds": 30,
+    "enable_ai_analysis": true
+  }
+}

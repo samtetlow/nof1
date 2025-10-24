@@ -1,0 +1,15 @@
+{
+  "solicitation": {
+    "title": "Cybersecurity Services",
+    "agency": "Department of Defense",
+    "naics_codes": ["541512"],
+    "set_asides": ["Small Business", "SDVOSB"],
+    "security_clearance": "Secret",
+    "required_capabilities": ["cybersecurity", "incident response", "zero trust"],
+    "keywords": ["siem", "soar", "threat detection"]
+  },
+  "enrich": false,
+  "top_k": 2
+}
+
+

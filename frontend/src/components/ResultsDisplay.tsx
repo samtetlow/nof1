@@ -1,0 +1,189 @@
+import React, { useState } from 'react';
+import { PipelineResponse, MatchResult } from '../services/api';
+import ScoreVisualization from './ScoreVisualization';
+import SelectionConfirmation from './SelectionConfirmation';
+
+interface ResultsDisplayProps {
+  results: PipelineResponse;
+  solicitationText?: string;
+}
+
+const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ results, solicitationText }) => {
+  const [selectedCompany, setSelectedCompany] = useState<MatchResult | null>(
+    results.results[0] || null
+  );
+
+  return (
+    <div className="space-y-6">
+      {/* Results List and Details */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Company List - Scrollable */}
+        <div className="lg:col-span-1">
+          <div className="bg-white rounded-lg shadow-sm p-4 sticky top-4">
+            <h4 className="text-sm font-semibold text-gray-900 mb-3">Top Matches</h4>
+            <div className="space-y-2 max-h-[calc(100vh-200px)] overflow-y-auto pr-2 custom-scrollbar">
+              {results.results.map((result, idx) => {
+                const isConfirmed = result.confirmation_result?.is_confirmed;
+                const confirmationScore = result.confirmation_result?.confidence_score;
+                
+                return (
+                  <button
+                    key={result.company_id}
+                    onClick={() => setSelectedCompany(result)}
+                    className={`w-full text-left p-3 rounded-lg border-2 transition-all ${
+                      selectedCompany?.company_id === result.company_id
+                        ? 'border-blue-500 bg-blue-50'
+                        : 'border-gray-200 hover:border-gray-300'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="font-medium text-gray-900">#{idx + 1}</span>
+                      {isConfirmed !== null && (
+                        <span className={`text-xs px-2 py-0.5 rounded-full ${
+                          isConfirmed 
+                            ? 'bg-green-100 text-green-700' 
+                            : 'bg-yellow-100 text-yellow-700'
+                        }`}>
+                          {isConfirmed ? '✓ Verified' : '⚠ Review'}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-sm font-medium text-gray-800 mb-1">
+                      {result.company_name || 'Unknown Company'}
+                    </p>
+                    {confirmationScore !== null && confirmationScore !== undefined && (
+                      <div className="flex items-center gap-2">
+                        <div className="flex-1 bg-gray-200 rounded-full h-1.5">
+                          <div 
+                            className={`h-1.5 rounded-full ${
+                              confirmationScore > 0.7 ? 'bg-green-500' : 
+                              confirmationScore > 0.5 ? 'bg-yellow-500' : 'bg-red-500'
+                            }`}
+                            style={{ width: `${confirmationScore * 100}%` }}
+                          />
+                        </div>
+                        <span className="text-xs text-gray-500">{Math.round(confirmationScore * 100)}%</span>
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        {/* Detailed View */}
+        {selectedCompany && (
+          <div className="lg:col-span-2 space-y-4">
+            {/* Company Header */}
+            <div className="bg-white rounded-lg shadow-sm p-6">
+              <div className="mb-4">
+                <h3 className="text-xl font-bold text-gray-900">{selectedCompany.company_name || 'Unknown Company'}</h3>
+                {selectedCompany.website && (
+                  <a 
+                    href={selectedCompany.website.startsWith('http') ? selectedCompany.website : `https://${selectedCompany.website}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-blue-600 hover:text-blue-800 hover:underline mt-1 inline-block"
+                  >
+                    {selectedCompany.website}
+                  </a>
+                )}
+                {!selectedCompany.website && (
+                  <p className="text-sm text-gray-500 mt-1">Website not available</p>
+                )}
+              </div>
+
+              {/* Recommendation */}
+              <div className={`p-4 rounded-lg border-2 ${
+                selectedCompany.recommendation.startsWith('✓')
+                  ? 'bg-green-50 border-green-200'
+                  : selectedCompany.recommendation.startsWith('⚠')
+                  ? 'bg-yellow-50 border-yellow-200'
+                  : 'bg-red-50 border-red-200'
+              }`}>
+                <p className="font-semibold text-gray-900">{selectedCompany.recommendation}</p>
+              </div>
+            </div>
+
+            {/* Scores - Compact */}
+            <div className="bg-white rounded-lg shadow-sm p-3">
+              <h4 className="text-xs font-semibold text-gray-900 mb-2">Score Breakdown</h4>
+              <ScoreVisualization result={selectedCompany} />
+            </div>
+
+            {/* Confirmation Analysis (if available) */}
+            {selectedCompany.confirmation_result && (
+              <div className="bg-white rounded-lg shadow-sm p-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h4 className="text-sm font-semibold text-gray-900">Confirmation Analysis</h4>
+                  <span className={`text-xs px-3 py-1 rounded-full font-medium ${
+                    selectedCompany.confirmation_result.is_confirmed 
+                      ? 'bg-green-100 text-green-700' 
+                      : 'bg-yellow-100 text-yellow-700'
+                  }`}>
+                    {selectedCompany.confirmation_result.is_confirmed ? '✓ Verified Match' : '⚠ Needs Review'}
+                  </span>
+                </div>
+
+                {/* Confidence Score */}
+                {selectedCompany.confirmation_result.confidence_score !== null && (
+                  <div className="mb-4">
+                    <div className="flex items-center justify-between text-sm mb-1">
+                      <span className="text-gray-600">Confidence Score</span>
+                      <span className="font-medium">{Math.round(selectedCompany.confirmation_result.confidence_score * 100)}%</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div 
+                        className={`h-2 rounded-full ${
+                          selectedCompany.confirmation_result.confidence_score > 0.7 ? 'bg-green-500' : 
+                          selectedCompany.confirmation_result.confidence_score > 0.5 ? 'bg-yellow-500' : 'bg-red-500'
+                        }`}
+                        style={{ width: `${selectedCompany.confirmation_result.confidence_score * 100}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
+
+                {/* Chain of Thought */}
+                {selectedCompany.confirmation_result.chain_of_thought && selectedCompany.confirmation_result.chain_of_thought.length > 0 && (
+                  <div className="mb-4">
+                    <h5 className="text-xs font-semibold text-gray-700 mb-2">Analysis Steps</h5>
+                    <ul className="space-y-1">
+                      {selectedCompany.confirmation_result.chain_of_thought.map((step: string, idx: number) => (
+                        <li key={idx} className="text-xs text-gray-600 flex items-start">
+                          <span className="mr-2 text-blue-500">•</span>
+                          <span>{step}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {/* Company Info Summary */}
+                {selectedCompany.confirmation_result.company_info && (
+                  <div className="mt-4 pt-4 border-t border-gray-200">
+                    <h5 className="text-xs font-semibold text-gray-700 mb-2">Company Information</h5>
+                    <p className="text-xs text-gray-600">{selectedCompany.confirmation_result.company_info}</p>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Decision Rationale */}
+            <div className="bg-white rounded-lg shadow-sm p-6">
+              <h4 className="text-sm font-semibold text-gray-900 mb-3">Decision Rationale</h4>
+              <p className="text-sm text-gray-700 whitespace-pre-wrap">
+                {selectedCompany.decision_rationale}
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+export default ResultsDisplay;
+
+

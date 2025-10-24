@@ -1,0 +1,41 @@
+HPAI Poultry Innovation Grand Challenge
+Fiscal Year (FY) 2025
+
+AGENCY: United States Department of Agriculture (USDA)
+NOTICE TYPE: Request for Proposals
+
+SOLICITATION SUMMARY:
+The USDA Agricultural Research Service (ARS) is seeking proposals for projects that address the future of poultry production in the face of Highly Pathogenic Avian Influenza (HPAI). This Grand Challenge seeks innovative solutions to improve biosecurity, disease surveillance, and rapid response capabilities for poultry farms.
+
+PROBLEM STATEMENT:
+Recent outbreaks of HPAI have devastated commercial and backyard poultry operations across the United States, resulting in significant economic losses and food security concerns. Current biosecurity measures are insufficient, and there is an urgent need for:
+
+1. Advanced early detection systems for rapid identification of HPAI
+2. Improved biosecurity protocols and infrastructure
+3. Novel vaccination and treatment approaches
+4. Real-time disease tracking and surveillance systems
+5. Farm-level rapid response technologies
+
+TECHNICAL REQUIREMENTS:
+Proposals must address one or more of the following technical areas:
+
+- Biosensor technology for early pathogen detection
+- IoT-based farm monitoring and alert systems
+- Vaccine development and cold-chain management
+- Data analytics for disease prediction modeling
+- Automated decontamination systems
+- Mobile diagnostic laboratories
+- Geospatial tracking systems
+
+EVALUATION CRITERIA:
+1. Technical Innovation (40%)
+2. Feasibility and scalability (25%)
+3. Cost-effectiveness (20%)
+4. Integration with existing farm operations (15%)
+
+FUNDING:
+Up to $5 million in total funding available. Individual awards ranging from $250,000 to $1 million.
+
+ELIGIBILITY:
+Open to agricultural technology companies, biotechnology firms, veterinary diagnostic companies, and research institutions with commercial partners.
+
