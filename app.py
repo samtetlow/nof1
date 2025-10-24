@@ -1295,11 +1295,13 @@ async def full_pipeline(
             confirmation_tasks = []
             for company in search_results[:top_k]:
                 company_name = company.get('name', 'Unknown Company')
+                company_description = company.get('description', None)  # Pass existing description
                 task = confirm_single_company(
                     company_name=company_name,
                     solicitation_title=solicitation_title,
                     themes=themes,
-                    chatgpt_source=chatgpt_source
+                    chatgpt_source=chatgpt_source,
+                    company_description=company_description  # Avoid extra API call
                 )
                 confirmation_tasks.append(task)
             
@@ -1444,11 +1446,14 @@ async def confirm_single_company(
     company_name: str,
     solicitation_title: str,
     themes: Dict[str, Any],
-    chatgpt_source
+    chatgpt_source,
+    company_description: str = None
 ) -> Dict[str, Any]:
     """
     Helper function to confirm a single company.
     Returns confirmation result with scores and recommendation.
+    
+    OPTIMIZED: Single API call instead of two for 50% faster processing.
     """
     # Input validation
     if not company_name or not company_name.strip():
@@ -1466,37 +1471,15 @@ async def confirm_single_company(
     try:
         logger.info(f"Confirming: {company_name}")
         
-        # Step 1: Gather company information using ChatGPT
-        company_info_prompt = f"""Research and provide comprehensive information about the company: {company_name}
-
-Please provide:
-1. Company overview (what they do, their main business focus)
-2. Core capabilities and services
-3. Industry expertise and specializations
-4. Notable projects or clients (if known)
-5. Company size and maturity indicators
-
-Be factual and concise. If information is limited, indicate that."""
+        # Use existing company description if available, otherwise note it
+        company_context = f"Company description from search: {company_description}" if company_description else f"Company name: {company_name} (description not available from search)"
         
-        # Get company information
-        company_info_response = chatgpt_source.client.chat.completions.create(
-            model=chatgpt_source.model,
-            messages=[
-                {"role": "system", "content": "You are a business intelligence analyst providing factual company information."},
-                {"role": "user", "content": company_info_prompt}
-            ],
-            max_tokens=500
-        )
-        company_info = company_info_response.choices[0].message.content
-        
-        # Step 2: Perform chain-of-thought analysis
-        
+        # Single API call: Combined research + verification
         confirmation_prompt = f"""You are an independent verification analyst. Perform a thorough chain-of-thought analysis to confirm if this company is truly a good fit for the solicitation.
 
 COMPANY: {company_name}
 
-COMPANY INFORMATION:
-{company_info}
+{company_context}
 
 SOLICITATION: {solicitation_title}
 
@@ -1506,9 +1489,9 @@ Key Priorities: {', '.join(themes.get('key_priorities', [])[:5])}
 Technical Capabilities Needed: {', '.join([str(cap) for cap in themes.get('technical_capabilities', [])[:5]])}
 
 TASK: Perform a step-by-step analysis:
-1. What specific capabilities does this company have?
+1. Based on what you know about {company_name}, what specific capabilities does this company have?
 2. How well do these capabilities match the solicitation requirements?
-3. What relevant experience might they have?
+3. What relevant experience might they have in this domain?
 4. What are the strengths of this match?
 5. What are potential risk factors or gaps?
 6. Final recommendation: proceed, reconsider, or reject?
@@ -1521,7 +1504,7 @@ Provide your response as JSON with this structure:
   "reasoning": "brief summary",
   "chain_of_thought": ["step 1 analysis", "step 2 analysis", ...],
   "findings": {{
-    "company_info": "summary",
+    "company_info": "brief company summary based on your knowledge",
     "capability_match": "assessment",
     "experience_assessment": "evaluation",
     "strengths": ["strength 1", "strength 2", ...],
@@ -1537,7 +1520,7 @@ Be honest and objective. If there are concerns, state them clearly."""
                 {"role": "system", "content": "You are an independent verification analyst performing objective assessments. Always return valid JSON."},
                 {"role": "user", "content": confirmation_prompt}
             ],
-            max_tokens=1500,
+            max_tokens=1200,  # Reduced from 1500 for faster processing
             temperature=0.3
         )
         
