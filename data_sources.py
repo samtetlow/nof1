@@ -157,7 +157,7 @@ class ChatGPTSource:
             raise ImportError("openai library not installed")
         self.client = openai.OpenAI(
             api_key=api_key,
-            timeout=60.0,  # 60 second timeout
+            timeout=300.0,  # 5 minute timeout
             max_retries=3  # Retry failed requests up to 3 times
         )
         self.model = model
