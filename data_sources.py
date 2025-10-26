@@ -255,7 +255,7 @@ DO NOT include any markdown formatting or code blocks, just the raw JSON array."
                     {"role": "system", "content": "You are an expert at identifying companies for government contracts. You have deep knowledge of companies across all industries including healthcare, biotech, agriculture, cybersecurity, manufacturing, energy, and more. Be specific and match companies to the exact domain requirements."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=2000,
+                max_tokens=4000,  # Increased to reliably handle up to 20 companies with full details
                 temperature=0.7
             )
             
@@ -286,15 +286,19 @@ DO NOT include any markdown formatting or code blocks, just the raw JSON array."
                     try:
                         companies = json.loads(json_match.group(0))
                         logger.info("Successfully extracted JSON from response")
-                    except:
+                    except Exception as ex:
+                        logger.error(f"Failed to extract JSON: {ex}")
                         return []
                 else:
+                    logger.error("No JSON array found in response")
                     return []
             
             # Validate it's a list
             if not isinstance(companies, list):
                 logger.error(f"ChatGPT returned non-list: {type(companies)}")
                 return []
+            
+            logger.info(f"✓ ChatGPT returned valid JSON with {len(companies)} companies")
             
             # Format results
             results = []
@@ -323,9 +327,18 @@ DO NOT include any markdown formatting or code blocks, just the raw JSON array."
             return results
             
         except Exception as e:
-            logger.error(f"ChatGPT company search error: {e}")
+            logger.error(f"ChatGPT company search error: {type(e).__name__}: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Check for specific error types
+            if "rate_limit" in str(e).lower():
+                logger.error("⚠️ RATE LIMIT EXCEEDED - Try again in a moment")
+            elif "timeout" in str(e).lower():
+                logger.error("⚠️ REQUEST TIMEOUT - API took too long to respond")
+            elif "authentication" in str(e).lower() or "api_key" in str(e).lower():
+                logger.error("⚠️ API KEY INVALID - Check your OpenAI API key")
+            
             return []
 
 

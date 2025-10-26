@@ -1589,10 +1589,13 @@ async def full_pipeline(
             raise HTTPException(400, "Could not extract sufficient themes from solicitation. Please ensure the document contains clear requirements and problem statements.")
         
         # Search for companies using extracted themes
+        # Get top companies (no filtering by score - just take top results)
         logger.info("Searching for companies using extracted themes")
         logger.info(f"Themes extracted: {list(themes.keys())}")
         logger.info(f"Company type filter: {company_type}")
         logger.info(f"Company size filter: {company_size}")
+        logger.info(f"Requesting {top_k} companies as specified by slider")
+        # Request exactly the number of companies selected by the user
         search_results = await theme_search.search_by_themes(themes, max_companies=top_k, company_type=company_type, company_size=company_size)
         
         if not search_results:
@@ -1607,22 +1610,35 @@ async def full_pipeline(
                 },
                 "companies_evaluated": 0,
                 "top_matches_analyzed": 0,
-                "results": []
+                "results": [],
+                "pagination": {
+                    "total_matches_above_50": 0,
+                    "current_batch": 0,
+                    "has_more": False,
+                    "remaining": 0,
+                    "next_index": 0
+                }
             }
         
-        # Run confirmation on all search results
-        logger.info(f"Running confirmation analysis on {len(search_results)} companies")
+        # Sort search results by relevance score (best matches first)
+        search_results.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+        total_companies = len(search_results)
+        logger.info(f"Found {total_companies} companies, will confirm all of them")
+        
+        # Run confirmation on ALL returned companies
+        logger.info(f"Running confirmation analysis on all {total_companies} companies")
         confirmation_results = []
+        companies_to_confirm = search_results  # All companies returned
         
         # Check if ChatGPT is available for confirmation
         if "chatgpt" in data_source_manager.sources:
             chatgpt_source = data_source_manager.sources["chatgpt"]
             solicitation_title = solicitation.title or "Uploaded Solicitation"
             
-            # Run confirmation for each company in parallel
+            # Run confirmation for ALL companies returned
             import asyncio
             confirmation_tasks = []
-            for company in search_results[:top_k]:
+            for company in companies_to_confirm:
                 company_name = company.get('name', 'Unknown Company')
                 company_description = company.get('description', None)  # Pass existing description
                 task = confirm_single_company(
@@ -1639,11 +1655,11 @@ async def full_pipeline(
             logger.info(f"Completed {len(confirmation_results)} confirmation analyses")
         else:
             logger.warning("ChatGPT not available - skipping confirmation step")
-            confirmation_results = [None] * len(search_results[:top_k])
+            confirmation_results = [None] * len(companies_to_confirm)
         
-        # Combine search results with confirmation results
+        # Combine ONLY the confirmed companies with confirmation results
         combined_results = []
-        for idx, (company, confirmation) in enumerate(zip(search_results[:top_k], confirmation_results)):
+        for idx, (company, confirmation) in enumerate(zip(companies_to_confirm, confirmation_results)):
             company_name = company.get('name', 'Unknown Company')
             
             # Handle confirmation errors
@@ -1679,7 +1695,7 @@ async def full_pipeline(
         combined_results.sort(key=lambda x: x['final_score'], reverse=True)
         logger.info("Re-ordered companies based on confirmation scores")
         
-        # Format results for frontend
+        # Format confirmed results (first 15)
         final_results = []
         for idx, result in enumerate(combined_results, 1):
             company = result['company']
@@ -1750,6 +1766,7 @@ async def full_pipeline(
                 ]
             })
         
+        # Return all results (no pagination - slider determines count)
         return {
             "solicitation_summary": {
                 "title": solicitation.title or "Uploaded Solicitation",
@@ -1760,12 +1777,137 @@ async def full_pipeline(
             },
             "companies_evaluated": len(search_results),
             "top_matches_analyzed": len(final_results),
-            "results": final_results
+            "results": final_results,
+            "pagination": {
+                "total_matches_above_50": total_companies,  # Total companies found
+                "current_batch": total_companies,  # Showing all
+                "has_more": False,  # No more to load
+                "remaining": 0,
+                "next_index": total_companies
+            },
+            # Keep these for backward compatibility
+            "unconfirmed_companies": [],
+            "themes": themes,
+            "solicitation_title": solicitation.title or "Uploaded Solicitation"
         }
         
     except Exception as e:
         logger.error(f"Full pipeline error: {e}")
         raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
+
+# --------------------------------------------------------------------------------------
+# Load Next Batch - Confirm additional companies (pagination)
+# --------------------------------------------------------------------------------------
+@app.post("/api/load-next-batch")
+async def load_next_batch(
+    request: dict = Body(...)
+):
+    """
+    Load and confirm the next batch of companies (15 at a time)
+    Requires: companies (unconfirmed), themes, solicitation_title, start_index
+    """
+    try:
+        companies = request.get('companies', [])
+        themes = request.get('themes', {})
+        solicitation_title = request.get('solicitation_title', 'Solicitation')
+        start_index = request.get('start_index', 15)
+        batch_size = 15
+        
+        # Get the next batch
+        batch_companies = companies[start_index:start_index + batch_size]
+        
+        if not batch_companies:
+            return {
+                "results": [],
+                "has_more": False,
+                "remaining": 0
+            }
+        
+        # Run confirmation on this batch
+        if "chatgpt" not in data_source_manager.sources:
+            raise HTTPException(400, "ChatGPT not available for confirmation")
+        
+        chatgpt_source = data_source_manager.sources["chatgpt"]
+        
+        import asyncio
+        confirmation_tasks = []
+        for company in batch_companies:
+            company_name = company.get('name', 'Unknown Company')
+            company_description = company.get('description', None)
+            task = confirm_single_company(
+                company_name=company_name,
+                solicitation_title=solicitation_title,
+                themes=themes,
+                chatgpt_source=chatgpt_source,
+                company_description=company_description
+            )
+            confirmation_tasks.append(task)
+        
+        # Execute confirmations in parallel
+        confirmation_results = await asyncio.gather(*confirmation_tasks, return_exceptions=True)
+        logger.info(f"Confirmed next batch of {len(confirmation_results)} companies")
+        
+        # Format results
+        final_results = []
+        for idx, (company, confirmation) in enumerate(zip(batch_companies, confirmation_results), start_index + 1):
+            company_name = company.get('name', 'Unknown Company')
+            
+            # Handle confirmation errors
+            if isinstance(confirmation, Exception):
+                logger.error(f"Confirmation failed for {company_name}: {confirmation}")
+                confirmation = None
+            
+            # Calculate final score
+            search_score = company.get('relevance_score', 0.7)
+            
+            if confirmation and isinstance(confirmation, dict):
+                confirmation_score = confirmation.get('confidence_score', 0.5)
+                final_score = (search_score * 0.4) + (confirmation_score * 0.6)
+            else:
+                final_score = search_score
+            
+            final_results.append({
+                "company_id": company.get('id', f"search_{idx}"),
+                "company_name": company_name,
+                "match_score": final_score,
+                "alignment_percentage": final_score * 100,
+                "confidence_percentage": (confirmation.get('confidence_score', 0.7) * 100) if confirmation else 70.0,
+                "validation_level": "recommended" if final_score > 0.7 else "borderline",
+                "risk_level": "low" if confirmation and confirmation.get('is_confirmed') else "medium",
+                "recommendation": f"Rank #{idx}",
+                "description": company.get('description', ''),
+                "website": company.get('website', ''),
+                "sources": company.get('sources', []),
+                "strengths": confirmation.get('findings', {}).get('strengths', []) if confirmation else [],
+                "weaknesses": [],
+                "opportunities": [],
+                "risks": confirmation.get('findings', {}).get('risk_factors', []) if confirmation else [],
+                "decision_rationale": confirmation.get('reasoning', '') if confirmation else '',
+                "confirmation_result": {
+                    "is_confirmed": confirmation.get('is_confirmed') if confirmation else None,
+                    "confidence_score": confirmation.get('confidence_score') if confirmation else None,
+                    "recommendation": confirmation.get('recommendation') if confirmation else None,
+                    "alignment_summary": confirmation.get('alignment_summary') if confirmation else None,
+                    "chain_of_thought": confirmation.get('chain_of_thought', []) if confirmation else [],
+                    "findings": confirmation.get('findings') if confirmation else None
+                } if confirmation else None
+            })
+        
+        # Check if there are more
+        next_index = start_index + batch_size
+        has_more = next_index < len(companies)
+        remaining = max(0, len(companies) - next_index)
+        
+        return {
+            "results": final_results,
+            "has_more": has_more,
+            "remaining": remaining,
+            "next_index": next_index
+        }
+        
+    except Exception as e:
+        logger.error(f"Load next batch error: {e}")
+        raise HTTPException(status_code=500, detail=f"Error loading next batch: {str(e)}")
 
 # --------------------------------------------------------------------------------------
 # Selection Confirmation - Independent verification using chain-of-thought
@@ -1820,10 +1962,11 @@ Technical Capabilities Needed: {', '.join([str(cap) for cap in themes.get('techn
 TASK: You MUST write an EXTREMELY DETAILED, COMPREHENSIVE client-facing executive report. This is NOT optional.
 
 CRITICAL REQUIREMENTS - alignment_summary MUST BE:
-- MINIMUM 15-20 SENTENCES (approximately 400-500 words)
-- Organized in 5-6 FULL paragraphs
+- MINIMUM 18-25 SENTENCES (approximately 500-600 words)
+- Organized in 7 FULL paragraphs
 - HIGHLY DETAILED with specific examples, numbers, and concrete facts
-- Written as if you are a senior analyst who has thoroughly researched this company
+- Written as if you are a senior analyst who has thoroughly researched AND VERIFIED this company
+- Include VERIFICATION FINDINGS in paragraph 6
 
 MANDATORY STRUCTURE (DO NOT SKIP ANY SECTION):
 
@@ -1842,8 +1985,11 @@ PARAGRAPH 4 - Experience, Track Record & Past Performance (3-4 sentences):
 PARAGRAPH 5 - Key Strengths & Differentiators (2-3 sentences):
 "[Company Name]'s key strengths include [strength 1], [strength 2], and [strength 3]. Their [specific differentiator] provides competitive advantage for this opportunity. The company's [another strength] further demonstrates their suitability for this program."
 
-PARAGRAPH 6 - Strategic Fit & Conclusion (2-3 sentences):
-"Based on our comprehensive analysis, [Company Name] represents a strong match for this solicitation. The alignment between their established capabilities and the program requirements suggests they are well-positioned to deliver the outcomes sought. Their proven expertise and relevant experience make them a compelling candidate for this opportunity."
+PARAGRAPH 6 - Verification Summary (3-4 sentences):
+"Our verification process confirms [Company Name]'s alignment with this opportunity through multiple validation points. Cross-referencing their stated capabilities against the solicitation requirements reveals [specific validation findings]. Independent research corroborates their [specific verified capability or experience]. The verification analysis demonstrates [confidence level] in their ability to meet the program objectives."
+
+PARAGRAPH 7 - Strategic Fit & Conclusion (2-3 sentences):
+"Based on our comprehensive analysis and verification, [Company Name] represents a strong match for this solicitation. The alignment between their established capabilities and the program requirements suggests they are well-positioned to deliver the outcomes sought. Their proven expertise and relevant experience make them a compelling candidate for this opportunity."
 
 Provide your response as JSON with this structure:
 {{
@@ -1851,7 +1997,7 @@ Provide your response as JSON with this structure:
   "confidence_score": float (0-1),
   "recommendation": "proceed" | "reconsider" | "reject",
   "reasoning": "internal summary",
-  "alignment_summary": "MUST BE 15-20+ SENTENCES. Write the FULL report following ALL 6 paragraphs above. Use analyst language: 'Our research indicates', 'Analysis shows', 'Our assessment reveals'. Be EXTREMELY detailed and specific. This is for client presentation - make it thorough and professional. DO NOT abbreviate or skip sections.",
+  "alignment_summary": "MUST BE 18-25+ SENTENCES. Write the FULL report following ALL 7 paragraphs above INCLUDING the verification summary. Use analyst language: 'Our research indicates', 'Our analysts show', 'Our verification process confirms'. Be EXTREMELY detailed and specific. This is for client presentation - make it thorough and professional. DO NOT abbreviate or skip sections.",
   "chain_of_thought": ["analysis note 1", "analysis note 2", "analysis note 3", "analysis note 4", "analysis note 5"],
   "findings": {{
     "company_info": "4-5 sentence detailed background",
@@ -1862,15 +2008,15 @@ Provide your response as JSON with this structure:
   }}
 }}
 
-CRITICAL: The alignment_summary field MUST contain ALL 6 paragraphs above. Make reasonable inferences about the company based on their name and the industry. Be specific, detailed, and thorough. This should read like a comprehensive 2-page executive briefing."""
+CRITICAL: The alignment_summary field MUST contain ALL 7 paragraphs above INCLUDING the verification summary paragraph. Make reasonable inferences about companies based on their name and industry. Include specific verification findings and validation points. Be specific, detailed, and thorough. This should read like a comprehensive 2-3 page executive briefing with independent verification."""
 
         confirmation_response = chatgpt_source.client.chat.completions.create(
             model=chatgpt_source.model,
             messages=[
-                {"role": "system", "content": "You are a senior business analyst preparing EXTREMELY DETAILED executive reports for clients. Your alignment_summary MUST be 15-20+ sentences (400-500 words minimum) organized in 6 full paragraphs. Follow the provided structure EXACTLY. Use analyst language throughout: 'Our research indicates', 'Our analysts show', 'Our analysts indicate', 'Our analysts find', 'Our analysts assess'. Be VERY specific with concrete details, numbers, technologies, and examples. Make reasonable inferences about companies based on their name and industry. Write as if you have thoroughly researched each company. This is for client presentation - be professional, thorough, and substantive. Always return valid JSON."},
+                {"role": "system", "content": "You are a senior business analyst preparing EXTREMELY DETAILED executive reports for clients. Your alignment_summary MUST be 18-25+ sentences (500-600 words minimum) organized in 7 full paragraphs including a VERIFICATION SUMMARY paragraph. Follow the provided structure EXACTLY. Use analyst language throughout: 'Our research indicates', 'Our analysts show', 'Our analysts indicate', 'Our analysts find', 'Our analysts assess', 'Our verification process confirms'. Be VERY specific with concrete details, numbers, technologies, and examples. Make reasonable inferences about companies based on their name and industry. Write as if you have thoroughly researched AND verified each company. This is for client presentation - be professional, thorough, and substantive. Always return valid JSON."},
                 {"role": "user", "content": confirmation_prompt}
             ],
-            max_tokens=3500,  # Maximum for extremely detailed 15-20 sentence reports
+            max_tokens=4000,  # Maximum for extremely detailed 18-25 sentence reports with verification
             temperature=0.6
         )
         
