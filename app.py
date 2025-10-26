@@ -814,12 +814,15 @@ class MatchingEngine:
 app = FastAPI(title="n of 1 — Reverse Search Platform (single-file MVP)")
 
 # Add CORS middleware
+# Configure CORS to allow all origins (can be restricted to specific domains later)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # Frontend origin
-    allow_credentials=True,
+    allow_origins=["*"],  # Allow all origins for now
+    allow_credentials=False,  # Must be False when allow_origins is ["*"]
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,
 )
 
 # ----------------------------------
