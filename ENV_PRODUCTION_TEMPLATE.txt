@@ -1,0 +1,5 @@
+# Frontend Production Environment Variables
+# Create this as frontend/.env.production with your actual backend URL
+
+REACT_APP_API_URL=https://your-backend-url.railway.app
+
