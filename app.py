@@ -852,7 +852,8 @@ def root():
     return {
         "status": "healthy",
         "service": "n of 1 Platform",
-        "version": "1.0.0",
+        "version": "1.0.1",
+        "environment": "production",
         "data_sources_available": list(data_source_manager.sources.keys()) if data_source_manager.sources else []
     }
 
