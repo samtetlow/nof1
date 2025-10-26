@@ -57,11 +57,17 @@ def load_config() -> Dict[str, Any]:
 
 # Initialize engines
 config = load_config()
+logger.info(f"Configuration loaded: {len(config)} keys")
+logger.info(f"Config keys: {list(config.keys())}")
+
 # Pass the entire config (sources are at root level, not nested under "data_sources")
 data_source_manager = DataSourceManager(config)
+logger.info(f"Data sources initialized: {list(data_source_manager.sources.keys())}")
+
 confirmation_engine = ConfirmationEngine()
 validation_engine = ValidationEngine()
 theme_search = ThemeBasedSearch(data_source_manager)
+logger.info("All engines initialized successfully")
 
 DEFAULT_WEIGHTS = {
     "naics": 0.20,
@@ -824,6 +830,41 @@ app.add_middleware(
     expose_headers=["*"],
     max_age=3600,
 )
+
+# ----------------------------------
+# Startup event to initialize database
+# ----------------------------------
+@app.on_event("startup")
+def startup_event():
+    """Initialize database tables on startup"""
+    try:
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database tables created successfully")
+    except Exception as e:
+        logger.error(f"Failed to create database tables: {e}")
+
+# ----------------------------------
+# Health check endpoint for Railway
+# ----------------------------------
+@app.get("/")
+def root():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "n of 1 Platform",
+        "version": "1.0.0",
+        "data_sources_available": list(data_source_manager.sources.keys()) if data_source_manager.sources else []
+    }
+
+@app.get("/health")
+def health_check():
+    """Detailed health check"""
+    return {
+        "status": "ok",
+        "database": "connected",
+        "config_loaded": bool(config),
+        "data_sources": list(data_source_manager.sources.keys())
+    }
 
 # ----------------------------------
 # Weights endpoints
