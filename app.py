@@ -1828,16 +1828,16 @@ CRITICAL REQUIREMENTS - alignment_summary MUST BE:
 MANDATORY STRUCTURE (DO NOT SKIP ANY SECTION):
 
 PARAGRAPH 1 - Company Overview & Background (3-4 sentences):
-"Our research indicates that [Company Name] is a [describe business type and market position]. The company [describe operations, scale, years in business, market served]. Analysis shows they specialize in [specific domains/industries]. [Company Name] has established itself as [market position/differentiator]."
+"Our research indicates that [Company Name] is a [describe business type and market position]. The company [describe operations, scale, years in business, market served]. Our analysts find they specialize in [specific domains/industries]. [Company Name] has established itself as [market position/differentiator]."
 
 PARAGRAPH 2 - Core Capabilities & Technologies (4-5 sentences):
-"The company's primary capabilities include [capability 1], [capability 2], [capability 3], and [capability 4]. Specifically, their [describe specific technology/product/service] provides [specific functionality]. Our assessment reveals they utilize [specific methodologies/technologies/approaches] to deliver [specific outcomes]. [Company Name] also offers [additional capabilities/services], demonstrating [describe breadth of expertise]."
+"The company's primary capabilities include [capability 1], [capability 2], [capability 3], and [capability 4]. Specifically, their [describe specific technology/product/service] provides [specific functionality]. Our analysts assess that they utilize [specific methodologies/technologies/approaches] to deliver [specific outcomes]. [Company Name] also offers [additional capabilities/services], demonstrating [describe breadth of expertise]."
 
 PARAGRAPH 3 - Direct Alignment with Solicitation Requirements (4-5 sentences):
-"Analysis shows strong alignment between [Company Name]'s offerings and the solicitation's requirements. The solicitation calls for [requirement 1], which [Company Name] addresses through [specific capability/approach]. Their expertise in [domain] directly responds to the solicitation's emphasis on [specific requirement]. Additionally, their [capability] aligns with the requirement for [solicitation need], and their [another capability] supports the program's focus on [program objective]."
+"Our analysts show strong alignment between [Company Name]'s offerings and the solicitation's requirements. The solicitation calls for [requirement 1], which [Company Name] addresses through [specific capability/approach]. Their expertise in [domain] directly responds to the solicitation's emphasis on [specific requirement]. Additionally, their [capability] aligns with the requirement for [solicitation need], and their [another capability] supports the program's focus on [program objective]."
 
 PARAGRAPH 4 - Experience, Track Record & Past Performance (3-4 sentences):
-"Our research indicates [Company Name] has [X years/extensive] experience in [relevant domain]. The company has successfully [describe relevant past work, clients, or projects]. Their track record demonstrates [specific achievement, capability, or metric]. This proven experience in [domain] positions them to understand and address the unique challenges outlined in this solicitation."
+"Our analysts indicate [Company Name] has [X years/extensive] experience in [relevant domain]. The company has successfully [describe relevant past work, clients, or projects]. Their track record demonstrates [specific achievement, capability, or metric]. This proven experience in [domain] positions them to understand and address the unique challenges outlined in this solicitation."
 
 PARAGRAPH 5 - Key Strengths & Differentiators (2-3 sentences):
 "[Company Name]'s key strengths include [strength 1], [strength 2], and [strength 3]. Their [specific differentiator] provides competitive advantage for this opportunity. The company's [another strength] further demonstrates their suitability for this program."
@@ -1867,7 +1867,7 @@ CRITICAL: The alignment_summary field MUST contain ALL 6 paragraphs above. Make 
         confirmation_response = chatgpt_source.client.chat.completions.create(
             model=chatgpt_source.model,
             messages=[
-                {"role": "system", "content": "You are a senior business analyst preparing EXTREMELY DETAILED executive reports for clients. Your alignment_summary MUST be 15-20+ sentences (400-500 words minimum) organized in 6 full paragraphs. Follow the provided structure EXACTLY. Use analyst language throughout: 'Our research indicates', 'Analysis shows', 'Our assessment reveals'. Be VERY specific with concrete details, numbers, technologies, and examples. Make reasonable inferences about companies based on their name and industry. Write as if you have thoroughly researched each company. This is for client presentation - be professional, thorough, and substantive. Always return valid JSON."},
+                {"role": "system", "content": "You are a senior business analyst preparing EXTREMELY DETAILED executive reports for clients. Your alignment_summary MUST be 15-20+ sentences (400-500 words minimum) organized in 6 full paragraphs. Follow the provided structure EXACTLY. Use analyst language throughout: 'Our research indicates', 'Our analysts show', 'Our analysts indicate', 'Our analysts find', 'Our analysts assess'. Be VERY specific with concrete details, numbers, technologies, and examples. Make reasonable inferences about companies based on their name and industry. Write as if you have thoroughly researched each company. This is for client presentation - be professional, thorough, and substantive. Always return valid JSON."},
                 {"role": "user", "content": confirmation_prompt}
             ],
             max_tokens=3500,  # Maximum for extremely detailed 15-20 sentence reports

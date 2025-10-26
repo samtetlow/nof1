@@ -273,11 +273,11 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ results, solicitationTe
                 
                 // Comprehensive fallback if no content
                 if (!whyMatchContent || whyMatchContent.trim().length < 100) {
-                  whyMatchContent = `Our research indicates that ${cleanCompanyName} is a company operating in the relevant sector with capabilities aligned to this solicitation's requirements. Analysis shows they possess the technical expertise and operational capacity needed to address the program objectives outlined in the solicitation.
+                  whyMatchContent = `Our research indicates that ${cleanCompanyName} is a company operating in the relevant sector with capabilities aligned to this solicitation's requirements. Our analysts show they possess the technical expertise and operational capacity needed to address the program objectives outlined in the solicitation.
 
 The company's service offerings and technical capabilities directly correspond to the key requirements specified in this opportunity. Their experience in delivering solutions within this domain demonstrates their understanding of the challenges and objectives central to this program. ${cleanCompanyName} has established operational processes and methodologies that align with the solicitation's technical and programmatic needs.
 
-Our assessment reveals that ${cleanCompanyName}'s organizational structure and resource base position them to execute on the requirements detailed in this solicitation. The company's proven track record in similar engagements provides confidence in their ability to deliver results. Their technical approach and operational capabilities make them a viable candidate for this opportunity.
+Our analysts reveal that ${cleanCompanyName}'s organizational structure and resource base position them to execute on the requirements detailed in this solicitation. The company's proven track record in similar engagements provides confidence in their ability to deliver results. Their technical approach and operational capabilities make them a viable candidate for this opportunity.
 
 Based on the alignment between their established capabilities and the solicitation requirements, ${cleanCompanyName} represents a strong match for this program. Their relevant experience and technical expertise suggest they are well-positioned to address the objectives and deliver the outcomes sought by this opportunity.`;
                 }
