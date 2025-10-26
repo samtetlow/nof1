@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { Solicitation, apiService } from '../services/api';
 
 interface SolicitationFormProps {
-  onAnalyze: (solicitation: Solicitation, options: { enrich: boolean; topK: number; companyType: 'for-profit' | 'academic-nonprofit'; companySize: 'all' | 'small' | 'large' }) => void;
+  onAnalyze: (solicitation: Solicitation, options: { enrich: boolean; topK: number; companyType: 'for-profit' | 'academic-nonprofit'; companySize: 'all' | 'small' | 'large'; fileName?: string }) => void;
   loading: boolean;
 }
 
@@ -156,7 +156,7 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
       return;
     }
     
-    onAnalyze(formData, { enrich, topK, companyType, companySize });
+    onAnalyze(formData, { enrich, topK, companyType, companySize, fileName });
   };
 
   return (

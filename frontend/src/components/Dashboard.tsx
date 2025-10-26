@@ -8,12 +8,14 @@ const Dashboard: React.FC = () => {
   const [results, setResults] = useState<PipelineResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [solicitationText, setSolicitationText] = useState<string>('');
+  const [uploadedFileName, setUploadedFileName] = useState<string>('');
 
   const handleAnalyze = async (solicitation: Solicitation, options: {
     enrich: boolean;
     topK: number;
     companyType: 'for-profit' | 'academic-nonprofit';
     companySize: 'all' | 'small' | 'large';
+    fileName?: string;
   }) => {
     setLoading(true);
     setError(null);
@@ -27,8 +29,9 @@ const Dashboard: React.FC = () => {
         return;
       }
 
-      // Store solicitation text for confirmation
+      // Store solicitation text and filename for confirmation
       setSolicitationText(solicitation.raw_text);
+      setUploadedFileName(options.fileName || '');
 
       const response = await apiService.runFullPipeline(
         solicitation,
@@ -100,7 +103,7 @@ const Dashboard: React.FC = () => {
       )}
 
       {/* Results Display */}
-      {results && !loading && <ResultsDisplay results={results} solicitationText={solicitationText} />}
+      {results && !loading && <ResultsDisplay results={results} solicitationText={solicitationText} uploadedFileName={uploadedFileName} />}
     </div>
   );
 };

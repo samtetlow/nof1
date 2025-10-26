@@ -280,7 +280,7 @@ Respond in JSON format:
 Solicitation text:
 {text[:4000]}
 
-Return ONLY valid JSON with no additional text or markdown.
+Return ONLY valid JSON with no additional text or markdown."""
 
         response = chatgpt.client.chat.completions.create(
             model=chatgpt.model,
@@ -624,96 +624,96 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
         
         # Generate Key Topics for fallback (only if AI didn't provide them)
         key_topics = []
-    
-    def ensure_complete_sentence(text: str) -> str:
-        """Ensure the topic is a complete, standalone sentence"""
-        text = text.strip()
         
-        # Check if it starts with a capital letter
-        if text and not text[0].isupper():
-            text = text[0].upper() + text[1:]
+        def ensure_complete_sentence(text: str) -> str:
+            """Ensure the topic is a complete, standalone sentence"""
+            text = text.strip()
+            
+            # Check if it starts with a capital letter
+            if text and not text[0].isupper():
+                text = text[0].upper() + text[1:]
+            
+            # Check if it ends with proper punctuation
+            if text and text[-1] not in '.!?':
+                text = text + '.'
+            
+            # Check if it has a subject and verb (basic check)
+            # If it starts with a gerund or noun without context, add a subject
+            words = text.split()
+            if len(words) > 0:
+                first_word = words[0].lower()
+                # If starts with -ing or is a noun phrase without "the/this/these", make it complete
+                if first_word.endswith('ing') and len(words) > 2:
+                    # Check if there's no clear subject
+                    if not any(w.lower() in ['the', 'this', 'these', 'those', 'program', 'solicitation', 'project'] for w in words[:3]):
+                        text = f"The program requires {text[0].lower()}{text[1:]}"
+            
+            return text
         
-        # Check if it ends with proper punctuation
-        if text and text[-1] not in '.!?':
-            text = text + '.'
-        
-        # Check if it has a subject and verb (basic check)
-        # If it starts with a gerund or noun without context, add a subject
-        words = text.split()
-        if len(words) > 0:
-            first_word = words[0].lower()
-            # If starts with -ing or is a noun phrase without "the/this/these", make it complete
-            if first_word.endswith('ing') and len(words) > 2:
-                # Check if there's no clear subject
-                if not any(w.lower() in ['the', 'this', 'these', 'those', 'program', 'solicitation', 'project'] for w in words[:3]):
-                    text = f"The program requires {text[0].lower()}{text[1:]}"
-        
-        return text
-    
-    # Topic 1: Primary Technical Domain - Detailed description with focus areas
-    if themes["technical_capabilities"]:
-        cap = themes["technical_capabilities"][0]
-        cap_name = cap["area"]
-        focus_terms = cap.get("terms", [])[:4]
-        if focus_terms:
-            topic = f"The program requires {cap_name.lower()} expertise with emphasis on {', '.join(focus_terms)}, and related technical capabilities essential for success"
-        else:
-            topic = f"The solicitation requires {cap_name.lower()} capabilities as the primary technical foundation, including relevant tools, methodologies, and proven experience"
-        key_topics.append(ensure_complete_sentence(topic))
-    
-    # Topic 2: Core Problem/Challenge - Full problem statement
-    if themes["problem_areas"]:
-        problem = themes["problem_areas"][0]
-        # Provide full context without truncation for better understanding
-        if len(problem) > 150:
-            topic = f"The central challenge this solicitation aims to address is {problem[:150].lower()}"
-        else:
-            # Check if problem already forms a complete sentence
-            if problem[0].isupper() and problem[-1] in '.!?':
-                topic = f"The core technical challenge is: {problem}"
+        # Topic 1: Primary Technical Domain - Detailed description with focus areas
+        if themes["technical_capabilities"]:
+            cap = themes["technical_capabilities"][0]
+            cap_name = cap["area"]
+            focus_terms = cap.get("terms", [])[:4]
+            if focus_terms:
+                topic = f"The program requires {cap_name.lower()} expertise with emphasis on {', '.join(focus_terms)}, and related technical capabilities essential for success"
             else:
-                topic = f"This solicitation addresses {problem.lower()} as the core technical challenge that requires innovative solutions"
-        key_topics.append(ensure_complete_sentence(topic))
-    
-    # Topic 3: Critical Requirements - Expanded priority description
-    if themes["key_priorities"]:
-        priority = themes["key_priorities"][0]
-        # Add context about why this is critical
-        if "must" in priority.lower() or "shall" in priority.lower() or "required" in priority.lower():
-            topic = f"A mandatory program requirement is to {priority.lower()}" if not priority[0].isupper() else priority
-        else:
-            topic = f"The program prioritizes {priority.lower()} as a critical success factor" if not priority[0].isupper() else priority
-        key_topics.append(ensure_complete_sentence(topic))
-    
-    # Topic 4: Secondary Technical Domain - Include complementary capabilities
-    if len(themes["technical_capabilities"]) > 1:
-        cap2 = themes["technical_capabilities"][1]
-        cap2_name = cap2["area"]
-        focus_terms2 = cap2.get("terms", [])[:3]
-        if focus_terms2:
-            topic = f"Complementary {cap2_name.lower()} capabilities are needed, including {', '.join(focus_terms2)}, to support integrated solution development"
-        else:
-            topic = f"Additional technical expertise in {cap2_name.lower()} serves as a supporting capability that enhances overall solution effectiveness"
-        key_topics.append(ensure_complete_sentence(topic))
-    
-    # Topic 5: Secondary Problem Area - Additional challenge context
-    if len(themes["problem_areas"]) > 1:
-        problem2 = themes["problem_areas"][1]
-        topic = f"An important secondary consideration is {problem2.lower()}, which impacts overall program objectives"
-        key_topics.append(ensure_complete_sentence(topic))
-    
-    # Topic 6: Additional Priority - Third-tier requirements
-    if len(themes["key_priorities"]) > 1:
-        priority2 = themes["key_priorities"][1]
-        topic = f"The solicitation also emphasizes {priority2.lower()}, providing additional program direction and evaluation criteria"
-        key_topics.append(ensure_complete_sentence(topic))
-    
-    # Topic 7: Evaluation Criteria - How proposals are assessed (if not already covered)
-    if themes["evaluation_factors"] and len(key_topics) < 6:
-        eval_factor = themes["evaluation_factors"][0]
-        topic = f"Proposals will be evaluated based on {eval_factor.lower()}, demonstrating the importance of this criterion in the selection process"
-        key_topics.append(ensure_complete_sentence(topic))
-    
+                topic = f"The solicitation requires {cap_name.lower()} capabilities as the primary technical foundation, including relevant tools, methodologies, and proven experience"
+            key_topics.append(ensure_complete_sentence(topic))
+        
+        # Topic 2: Core Problem/Challenge - Full problem statement
+        if themes["problem_areas"]:
+            problem = themes["problem_areas"][0]
+            # Provide full context without truncation for better understanding
+            if len(problem) > 150:
+                topic = f"The central challenge this solicitation aims to address is {problem[:150].lower()}"
+            else:
+                # Check if problem already forms a complete sentence
+                if problem[0].isupper() and problem[-1] in '.!?':
+                    topic = f"The core technical challenge is: {problem}"
+                else:
+                    topic = f"This solicitation addresses {problem.lower()} as the core technical challenge that requires innovative solutions"
+            key_topics.append(ensure_complete_sentence(topic))
+        
+        # Topic 3: Critical Requirements - Expanded priority description
+        if themes["key_priorities"]:
+            priority = themes["key_priorities"][0]
+            # Add context about why this is critical
+            if "must" in priority.lower() or "shall" in priority.lower() or "required" in priority.lower():
+                topic = f"A mandatory program requirement is to {priority.lower()}" if not priority[0].isupper() else priority
+            else:
+                topic = f"The program prioritizes {priority.lower()} as a critical success factor" if not priority[0].isupper() else priority
+            key_topics.append(ensure_complete_sentence(topic))
+        
+        # Topic 4: Secondary Technical Domain - Include complementary capabilities
+        if len(themes["technical_capabilities"]) > 1:
+            cap2 = themes["technical_capabilities"][1]
+            cap2_name = cap2["area"]
+            focus_terms2 = cap2.get("terms", [])[:3]
+            if focus_terms2:
+                topic = f"Complementary {cap2_name.lower()} capabilities are needed, including {', '.join(focus_terms2)}, to support integrated solution development"
+            else:
+                topic = f"Additional technical expertise in {cap2_name.lower()} serves as a supporting capability that enhances overall solution effectiveness"
+            key_topics.append(ensure_complete_sentence(topic))
+        
+        # Topic 5: Secondary Problem Area - Additional challenge context
+        if len(themes["problem_areas"]) > 1:
+            problem2 = themes["problem_areas"][1]
+            topic = f"An important secondary consideration is {problem2.lower()}, which impacts overall program objectives"
+            key_topics.append(ensure_complete_sentence(topic))
+        
+        # Topic 6: Additional Priority - Third-tier requirements
+        if len(themes["key_priorities"]) > 1:
+            priority2 = themes["key_priorities"][1]
+            topic = f"The solicitation also emphasizes {priority2.lower()}, providing additional program direction and evaluation criteria"
+            key_topics.append(ensure_complete_sentence(topic))
+        
+        # Topic 7: Evaluation Criteria - How proposals are assessed (if not already covered)
+        if themes["evaluation_factors"] and len(key_topics) < 6:
+            eval_factor = themes["evaluation_factors"][0]
+            topic = f"Proposals will be evaluated based on {eval_factor.lower()}, demonstrating the importance of this criterion in the selection process"
+            key_topics.append(ensure_complete_sentence(topic))
+        
         # Topic 8: Third technical capability (if available and space permits)
         if len(themes["technical_capabilities"]) > 2 and len(key_topics) < 6:
             cap3 = themes["technical_capabilities"][2]
@@ -721,7 +721,7 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
             topic = f"Tertiary expertise in {cap3_name.lower()} may provide competitive advantages and contribute to comprehensive solution delivery"
             key_topics.append(ensure_complete_sentence(topic))
         
-        # Only set key_takeaways in fallback mode (AI didn't generate them)
+        # Set key_takeaways in fallback mode (AI didn't generate them)
         themes["key_takeaways"] = key_topics[:6]  # Max 6 key topics
     
     return themes
@@ -1409,7 +1409,7 @@ async def match_with_confirmation(
 ):
     """
     Enhanced matching: Match + Enrich + Confirm
-    Pipeline: Matching Engine → Data Enrichment → Confirmation Engine
+    Pipeline: Matching Engine -> Data Enrichment -> Confirmation Engine
     """
     db = SessionLocal()
     try:
@@ -1817,58 +1817,61 @@ Problem Areas: {', '.join(themes.get('problem_areas', [])[:5])}
 Key Priorities: {', '.join(themes.get('key_priorities', [])[:5])}
 Technical Capabilities Needed: {', '.join([str(cap) for cap in themes.get('technical_capabilities', [])[:5]])}
 
-TASK: Perform a detailed step-by-step analysis:
-1. Based on what you know about {company_name}, identify their SPECIFIC products, services, or capabilities
-2. Compare their SPECIFIC capabilities to the SPECIFIC requirements in this solicitation
-3. Identify any relevant experience, clients, projects, or track record in this domain
-4. List concrete strengths that make them a good match (be specific with examples)
-5. Identify any potential risk factors, gaps, or concerns
-6. Make a final recommendation: proceed, reconsider, or reject
-7. Write a detailed 3-4 sentence client-facing paragraph that:
-   - Names SPECIFIC capabilities, products, or services the company offers
-   - Explains EXACTLY how these capabilities address the solicitation requirements
-   - References their relevant experience or proven track record if known
-   - Makes a clear, compelling case for why this company should be considered
+TASK: You MUST write an EXTREMELY DETAILED, COMPREHENSIVE client-facing executive report. This is NOT optional.
 
-IMPORTANT for the alignment_summary: 
-- Be SPECIFIC - mention actual capabilities, not general terms
-- Connect their capabilities DIRECTLY to solicitation requirements
-- Use professional, persuasive language suitable for a client presentation
-- If you don't know specific details, make reasonable inferences based on the company name and industry
+CRITICAL REQUIREMENTS - alignment_summary MUST BE:
+- MINIMUM 15-20 SENTENCES (approximately 400-500 words)
+- Organized in 5-6 FULL paragraphs
+- HIGHLY DETAILED with specific examples, numbers, and concrete facts
+- Written as if you are a senior analyst who has thoroughly researched this company
+
+MANDATORY STRUCTURE (DO NOT SKIP ANY SECTION):
+
+PARAGRAPH 1 - Company Overview & Background (3-4 sentences):
+"Our research indicates that [Company Name] is a [describe business type and market position]. The company [describe operations, scale, years in business, market served]. Analysis shows they specialize in [specific domains/industries]. [Company Name] has established itself as [market position/differentiator]."
+
+PARAGRAPH 2 - Core Capabilities & Technologies (4-5 sentences):
+"The company's primary capabilities include [capability 1], [capability 2], [capability 3], and [capability 4]. Specifically, their [describe specific technology/product/service] provides [specific functionality]. Our assessment reveals they utilize [specific methodologies/technologies/approaches] to deliver [specific outcomes]. [Company Name] also offers [additional capabilities/services], demonstrating [describe breadth of expertise]."
+
+PARAGRAPH 3 - Direct Alignment with Solicitation Requirements (4-5 sentences):
+"Analysis shows strong alignment between [Company Name]'s offerings and the solicitation's requirements. The solicitation calls for [requirement 1], which [Company Name] addresses through [specific capability/approach]. Their expertise in [domain] directly responds to the solicitation's emphasis on [specific requirement]. Additionally, their [capability] aligns with the requirement for [solicitation need], and their [another capability] supports the program's focus on [program objective]."
+
+PARAGRAPH 4 - Experience, Track Record & Past Performance (3-4 sentences):
+"Our research indicates [Company Name] has [X years/extensive] experience in [relevant domain]. The company has successfully [describe relevant past work, clients, or projects]. Their track record demonstrates [specific achievement, capability, or metric]. This proven experience in [domain] positions them to understand and address the unique challenges outlined in this solicitation."
+
+PARAGRAPH 5 - Key Strengths & Differentiators (2-3 sentences):
+"[Company Name]'s key strengths include [strength 1], [strength 2], and [strength 3]. Their [specific differentiator] provides competitive advantage for this opportunity. The company's [another strength] further demonstrates their suitability for this program."
+
+PARAGRAPH 6 - Strategic Fit & Conclusion (2-3 sentences):
+"Based on our comprehensive analysis, [Company Name] represents a strong match for this solicitation. The alignment between their established capabilities and the program requirements suggests they are well-positioned to deliver the outcomes sought. Their proven expertise and relevant experience make them a compelling candidate for this opportunity."
 
 Provide your response as JSON with this structure:
 {{
   "is_confirmed": boolean,
   "confidence_score": float (0-1),
   "recommendation": "proceed" | "reconsider" | "reject",
-  "reasoning": "brief summary",
-  "alignment_summary": "3-4 sentence detailed, professional client-facing paragraph that names SPECIFIC capabilities/products this company has, explains EXACTLY how they address the solicitation requirements, and references their relevant experience or track record",
-  "chain_of_thought": ["step 1 analysis", "step 2 analysis", ...],
+  "reasoning": "internal summary",
+  "alignment_summary": "MUST BE 15-20+ SENTENCES. Write the FULL report following ALL 6 paragraphs above. Use analyst language: 'Our research indicates', 'Analysis shows', 'Our assessment reveals'. Be EXTREMELY detailed and specific. This is for client presentation - make it thorough and professional. DO NOT abbreviate or skip sections.",
+  "chain_of_thought": ["analysis note 1", "analysis note 2", "analysis note 3", "analysis note 4", "analysis note 5"],
   "findings": {{
-    "company_info": "brief company summary based on your knowledge",
-    "capability_match": "assessment",
-    "experience_assessment": "evaluation",
-    "strengths": ["strength 1", "strength 2", ...],
-    "risk_factors": ["risk 1", "risk 2", ...]
+    "company_info": "4-5 sentence detailed background",
+    "capability_match": "4-5 sentence detailed assessment",
+    "experience_assessment": "4-5 sentence detailed evaluation",
+    "strengths": ["detailed strength 1", "detailed strength 2", "detailed strength 3", "detailed strength 4", "detailed strength 5"],
+    "risk_factors": ["risk 1", "risk 2"]
   }}
 }}
 
-Be honest and objective. If there are concerns, state them clearly. 
-
-CRITICAL: The alignment_summary must be SPECIFIC and DETAILED:
-- Mention actual capabilities, products, or services by name
-- Connect specific company offerings to specific solicitation requirements
-- Use concrete examples and factual details
-- Make it persuasive and client-ready with specific evidence"""
+CRITICAL: The alignment_summary field MUST contain ALL 6 paragraphs above. Make reasonable inferences about the company based on their name and the industry. Be specific, detailed, and thorough. This should read like a comprehensive 2-page executive briefing."""
 
         confirmation_response = chatgpt_source.client.chat.completions.create(
             model=chatgpt_source.model,
             messages=[
-                {"role": "system", "content": "You are an independent verification analyst performing objective, detailed assessments. Provide SPECIFIC details about companies including their actual capabilities, products, and services. Connect company offerings DIRECTLY to solicitation requirements with concrete examples. Write in clear, professional English. Always return valid JSON."},
+                {"role": "system", "content": "You are a senior business analyst preparing EXTREMELY DETAILED executive reports for clients. Your alignment_summary MUST be 15-20+ sentences (400-500 words minimum) organized in 6 full paragraphs. Follow the provided structure EXACTLY. Use analyst language throughout: 'Our research indicates', 'Analysis shows', 'Our assessment reveals'. Be VERY specific with concrete details, numbers, technologies, and examples. Make reasonable inferences about companies based on their name and industry. Write as if you have thoroughly researched each company. This is for client presentation - be professional, thorough, and substantive. Always return valid JSON."},
                 {"role": "user", "content": confirmation_prompt}
             ],
-            max_tokens=1500,  # Increased for more detailed responses
-            temperature=0.4
+            max_tokens=3500,  # Maximum for extremely detailed 15-20 sentence reports
+            temperature=0.6
         )
         
         result_content = confirmation_response.choices[0].message.content.strip()
