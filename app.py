@@ -47,13 +47,24 @@ Base = declarative_base()
 # Load configuration for data sources
 def load_config() -> Dict[str, Any]:
     """Load configuration for API keys and data sources"""
+    config = {}
+    
+    # Try to load from config.json first
     if CONFIG_PATH.exists():
         try:
-            return json.loads(CONFIG_PATH.read_text())
+            config = json.loads(CONFIG_PATH.read_text())
         except Exception as e:
             logger.warning(f"Failed to load config: {e}")
-            return {}
-    return {}
+    
+    # Override with environment variables if present
+    if os.getenv("OPENAI_API_KEY"):
+        if "chatgpt" not in config:
+            config["chatgpt"] = {}
+        config["chatgpt"]["api_key"] = os.getenv("OPENAI_API_KEY")
+        config["chatgpt"]["model"] = config.get("chatgpt", {}).get("model", "gpt-3.5-turbo")
+        logger.info("Loaded OpenAI API key from environment variable")
+    
+    return config
 
 # Initialize engines
 config = load_config()
