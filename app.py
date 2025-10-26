@@ -237,6 +237,72 @@ NAICS_RX = re.compile(r"\b(5415[1-9]\d?|54\d{3}|3364\d|334\d{2}|6114\d|6211\d|62
 SETASIDE_TERMS = ["8(a)", "WOSB", "EDWOSB", "SDVOSB", "HUBZone", "Small Business", "SB"]
 CLEARANCE_TERMS = ["Public Trust", "Confidential", "Secret", "Top Secret", "TS", "TS/SCI"]
 
+def generate_ai_summary(text: str) -> Dict[str, Any]:
+    """
+    Use OpenAI to generate a clean, professional summary and key topics from the solicitation
+    """
+    try:
+        if "chatgpt" not in data_source_manager.sources:
+            logger.warning("ChatGPT not available for summary generation, using fallback")
+            return None
+        
+        chatgpt = data_source_manager.sources["chatgpt"]
+        
+        prompt = f"""Analyze this government solicitation and provide a professional analysis.
+
+Create:
+1. A clear 3-4 sentence summary (100-150 words) covering:
+   - What the solicitation seeks
+   - Key technical requirements
+   - Critical priorities
+
+2. 5-6 key topics as complete, grammatically correct sentences highlighting:
+   - Core technical challenges
+   - Required capabilities
+   - Important requirements
+   - Evaluation criteria
+
+Respond in JSON format:
+{{
+  "summary": "Professional 3-4 sentence summary...",
+  "key_topics": [
+    "Complete sentence about first topic.",
+    "Complete sentence about second topic.",
+    "etc..."
+  ]
+}}
+
+Solicitation text:
+{text[:4000]}
+
+Return ONLY valid JSON."""
+
+        response = chatgpt.client.chat.completions.create(
+            model=chatgpt.model,
+            messages=[
+                {"role": "system", "content": "You are an expert at analyzing government solicitations. Create clear, professional summaries with proper grammar. Always respond with valid JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=1000
+        )
+        
+        result_text = response.choices[0].message.content.strip()
+        
+        # Remove markdown code blocks if present
+        if result_text.startswith("```"):
+            result_text = re.sub(r'^```(?:json)?\s*', '', result_text)
+            result_text = re.sub(r'\s*```$', '', result_text)
+        
+        result = json.loads(result_text)
+        
+        logger.info("✓ AI summary generated successfully")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error generating AI summary: {e}")
+        return None
+
 def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
     """
     Analyze solicitation to extract key topics and priorities.
@@ -454,93 +520,105 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
     themes["search_keywords"] = search_keywords
     
     # === STEP 8: GENERATE OVERVIEW & KEY TOPICS ===
-    # Create detailed paragraph summary (3-5 sentences)
-    summary_parts = []
+    # Try AI-powered summary first for best quality
+    ai_summary = generate_ai_summary(text)
     
-    # Helper to extract complete, grammatical phrases
-    def extract_clean_phrase(text: str, max_chars: int = 150) -> str:
-        """Extract a clean phrase without cutting mid-word or leaving fragments"""
-        if not text or len(text) <= max_chars:
-            return text.strip()
-        
-        # Truncate at max_chars
-        truncated = text[:max_chars].strip()
-        
-        # Find the last complete word
-        last_space = truncated.rfind(' ')
-        if last_space > max_chars * 0.7:  # Only if we're not losing too much
-            truncated = truncated[:last_space].strip()
-        
-        # Remove trailing incomplete punctuation or conjunctions
-        while truncated and truncated[-1] in ',;:-()':
-            truncated = truncated[:-1].strip()
-        
-        # Remove trailing conjunctions
-        trailing_words = ['and', 'or', 'but', 'for', 'with', 'to', 'of', 'in', 'on', 'at', 'by']
-        words = truncated.split()
-        if words and words[-1].lower() in trailing_words:
-            truncated = ' '.join(words[:-1])
-        
-        return truncated.strip()
-    
-    # Sentence 1: What is this solicitation about? (Core problem/need)
-    if themes["problem_statement"]:
-        clean_stmt = extract_clean_phrase(themes["problem_statement"], 200)
-        summary_parts.append(clean_stmt)
-    elif themes["problem_areas"]:
-        clean_problem = extract_clean_phrase(themes['problem_areas'][0], 150)
-        if clean_problem:
-            summary_parts.append(f"This solicitation seeks innovative solutions to {clean_problem.lower()}")
+    if ai_summary and "summary" in ai_summary and "key_topics" in ai_summary:
+        # Use AI-generated summary (clean and grammatically correct)
+        themes["overview"] = ai_summary["summary"]
+        themes["key_takeaways"] = ai_summary["key_topics"][:6]  # Limit to 6 topics
+        logger.info("Using AI-generated summary and topics")
     else:
-        # Extract first substantial sentence from text
-        sentences = [s.strip() for s in re.split(r'[.!?]', text[:800]) if len(s.strip()) > 40]
-        if sentences:
-            summary_parts.append(extract_clean_phrase(sentences[0], 200))
-    
-    # Sentence 2: Technical capabilities and expertise needed
-    if themes["technical_capabilities"]:
-        if len(themes["technical_capabilities"]) >= 3:
-            cap_names = [cap["area"] for cap in themes["technical_capabilities"][:3]]
-            summary_parts.append(f"The program requires expertise in {', '.join(cap_names[:-1])}, and {cap_names[-1]}")
-        elif len(themes["technical_capabilities"]) == 2:
-            cap_names = [cap["area"] for cap in themes["technical_capabilities"][:2]]
-            summary_parts.append(f"The program requires expertise in {cap_names[0]} and {cap_names[1]}")
+        # Fallback to manual extraction if AI is unavailable
+        logger.info("Using fallback manual summary extraction")
+        
+        # Create detailed paragraph summary (3-5 sentences)
+        summary_parts = []
+        
+        # Helper to extract complete, grammatical phrases
+        def extract_clean_phrase(text: str, max_chars: int = 150) -> str:
+            """Extract a clean phrase without cutting mid-word or leaving fragments"""
+            if not text or len(text) <= max_chars:
+                return text.strip()
+            
+            # Truncate at max_chars
+            truncated = text[:max_chars].strip()
+            
+            # Find the last complete word
+            last_space = truncated.rfind(' ')
+            if last_space > max_chars * 0.7:  # Only if we're not losing too much
+                truncated = truncated[:last_space].strip()
+            
+            # Remove trailing incomplete punctuation or conjunctions
+            while truncated and truncated[-1] in ',;:-()':
+                truncated = truncated[:-1].strip()
+            
+            # Remove trailing conjunctions
+            trailing_words = ['and', 'or', 'but', 'for', 'with', 'to', 'of', 'in', 'on', 'at', 'by']
+            words = truncated.split()
+            if words and words[-1].lower() in trailing_words:
+                truncated = ' '.join(words[:-1])
+            
+            return truncated.strip()
+        
+        # Sentence 1: What is this solicitation about? (Core problem/need)
+        if themes["problem_statement"]:
+            clean_stmt = extract_clean_phrase(themes["problem_statement"], 200)
+            summary_parts.append(clean_stmt)
+        elif themes["problem_areas"]:
+            clean_problem = extract_clean_phrase(themes['problem_areas'][0], 150)
+            if clean_problem:
+                summary_parts.append(f"This solicitation seeks innovative solutions to {clean_problem.lower()}")
         else:
-            summary_parts.append(f"The program requires expertise in {themes['technical_capabilities'][0]['area']}")
-    
-    # Sentence 3: Key priorities or requirements  
-    if themes["key_priorities"]:
-        clean_priority = extract_clean_phrase(themes["key_priorities"][0], 150)
-        if clean_priority:
-            summary_parts.append(f"Critical requirements include {clean_priority.lower()}")
-    
-    # Sentence 4: Additional context from second problem area or priority
-    if len(themes["problem_areas"]) > 1:
-        clean_second = extract_clean_phrase(themes["problem_areas"][1], 120)
-        if clean_second:
-            summary_parts.append(f"The solicitation also emphasizes {clean_second.lower()}")
-    elif len(themes["key_priorities"]) > 1:
-        clean_second_priority = extract_clean_phrase(themes["key_priorities"][1], 120)
-        if clean_second_priority:
-            summary_parts.append(f"Additionally, the program prioritizes {clean_second_priority.lower()}")
-    
-    # Join sentences properly
-    formatted_summary = []
-    for part in summary_parts:
-        part = part.strip()
-        if part:
-            # Ensure proper capitalization
-            if part[0].islower():
-                part = part[0].upper() + part[1:]
-            # Ensure proper ending
-            if part[-1] not in '.!?':
-                part += '.'
-            formatted_summary.append(part)
-    
-    themes["overview"] = " ".join(formatted_summary) if formatted_summary else extract_clean_phrase(text, 400) + "."
-    
-    # Generate Key Topics (robust, comprehensive content with complete sentences)
-    key_topics = []
+            # Extract first substantial sentence from text
+            sentences = [s.strip() for s in re.split(r'[.!?]', text[:800]) if len(s.strip()) > 40]
+            if sentences:
+                summary_parts.append(extract_clean_phrase(sentences[0], 200))
+        
+        # Sentence 2: Technical capabilities and expertise needed
+        if themes["technical_capabilities"]:
+            if len(themes["technical_capabilities"]) >= 3:
+                cap_names = [cap["area"] for cap in themes["technical_capabilities"][:3]]
+                summary_parts.append(f"The program requires expertise in {', '.join(cap_names[:-1])}, and {cap_names[-1]}")
+            elif len(themes["technical_capabilities"]) == 2:
+                cap_names = [cap["area"] for cap in themes["technical_capabilities"][:2]]
+                summary_parts.append(f"The program requires expertise in {cap_names[0]} and {cap_names[1]}")
+            else:
+                summary_parts.append(f"The program requires expertise in {themes['technical_capabilities'][0]['area']}")
+        
+        # Sentence 3: Key priorities or requirements  
+        if themes["key_priorities"]:
+            clean_priority = extract_clean_phrase(themes["key_priorities"][0], 150)
+            if clean_priority:
+                summary_parts.append(f"Critical requirements include {clean_priority.lower()}")
+        
+        # Sentence 4: Additional context from second problem area or priority
+        if len(themes["problem_areas"]) > 1:
+            clean_second = extract_clean_phrase(themes["problem_areas"][1], 120)
+            if clean_second:
+                summary_parts.append(f"The solicitation also emphasizes {clean_second.lower()}")
+        elif len(themes["key_priorities"]) > 1:
+            clean_second_priority = extract_clean_phrase(themes["key_priorities"][1], 120)
+            if clean_second_priority:
+                summary_parts.append(f"Additionally, the program prioritizes {clean_second_priority.lower()}")
+        
+        # Join sentences properly
+        formatted_summary = []
+        for part in summary_parts:
+            part = part.strip()
+            if part:
+                # Ensure proper capitalization
+                if part[0].islower():
+                    part = part[0].upper() + part[1:]
+                # Ensure proper ending
+                if part[-1] not in '.!?':
+                    part += '.'
+                formatted_summary.append(part)
+        
+        themes["overview"] = " ".join(formatted_summary) if formatted_summary else extract_clean_phrase(text, 400) + "."
+        
+        # Generate Key Topics for fallback (only if AI didn't provide them)
+        key_topics = []
     
     def ensure_complete_sentence(text: str) -> str:
         """Ensure the topic is a complete, standalone sentence"""
@@ -631,14 +709,15 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
         topic = f"Proposals will be evaluated based on {eval_factor.lower()}, demonstrating the importance of this criterion in the selection process"
         key_topics.append(ensure_complete_sentence(topic))
     
-    # Topic 8: Third technical capability (if available and space permits)
-    if len(themes["technical_capabilities"]) > 2 and len(key_topics) < 6:
-        cap3 = themes["technical_capabilities"][2]
-        cap3_name = cap3["area"]
-        topic = f"Tertiary expertise in {cap3_name.lower()} may provide competitive advantages and contribute to comprehensive solution delivery"
-        key_topics.append(ensure_complete_sentence(topic))
-    
-    themes["key_takeaways"] = key_topics[:6]  # Max 6 key topics
+        # Topic 8: Third technical capability (if available and space permits)
+        if len(themes["technical_capabilities"]) > 2 and len(key_topics) < 6:
+            cap3 = themes["technical_capabilities"][2]
+            cap3_name = cap3["area"]
+            topic = f"Tertiary expertise in {cap3_name.lower()} may provide competitive advantages and contribute to comprehensive solution delivery"
+            key_topics.append(ensure_complete_sentence(topic))
+        
+        # Only set key_takeaways in fallback mode (AI didn't generate them)
+        themes["key_takeaways"] = key_topics[:6]  # Max 6 key topics
     
     return themes
 
@@ -1733,14 +1812,18 @@ Problem Areas: {', '.join(themes.get('problem_areas', [])[:5])}
 Key Priorities: {', '.join(themes.get('key_priorities', [])[:5])}
 Technical Capabilities Needed: {', '.join([str(cap) for cap in themes.get('technical_capabilities', [])[:5]])}
 
-TASK: Perform a step-by-step analysis:
-1. Based on what you know about {company_name}, what specific capabilities does this company have?
-2. How well do these capabilities match the solicitation requirements?
-3. What relevant experience might they have in this domain?
-4. What are the strengths of this match?
-5. What are potential risk factors or gaps?
+TASK: Perform a detailed step-by-step analysis:
+1. Based on what you know about {company_name}, what specific products, services, or capabilities does this company offer?
+2. How do their SPECIFIC capabilities align with the SPECIFIC requirements in this solicitation?
+3. What relevant experience, projects, or clients demonstrate their expertise in this domain?
+4. What are the concrete strengths that make them a good match (be specific)?
+5. What are potential risk factors, gaps, or concerns?
 6. Final recommendation: proceed, reconsider, or reject?
-7. Write a client-facing paragraph explaining why this company aligns with the solicitation
+7. Write a detailed 3-4 sentence client-facing paragraph that:
+   - Names SPECIFIC capabilities or products the company has
+   - Explains EXACTLY how these match the solicitation requirements
+   - Mentions their relevant experience or track record
+   - Makes a clear case for why they should be considered
 
 Provide your response as JSON with this structure:
 {{
@@ -1748,7 +1831,7 @@ Provide your response as JSON with this structure:
   "confidence_score": float (0-1),
   "recommendation": "proceed" | "reconsider" | "reject",
   "reasoning": "brief summary",
-  "alignment_summary": "2-3 sentence client-facing paragraph explaining why this company is a strong match for the solicitation, highlighting their relevant capabilities and experience",
+  "alignment_summary": "3-4 sentence detailed, client-facing paragraph with SPECIFIC reasons why this company aligns, including their specific capabilities, how they match requirements, and relevant experience",
   "chain_of_thought": ["step 1 analysis", "step 2 analysis", ...],
   "findings": {{
     "company_info": "brief company summary based on your knowledge",

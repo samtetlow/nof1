@@ -232,7 +232,7 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
                         </svg>
                         Summary
                       </p>
-                      <p className="text-sm text-gray-800 leading-relaxed text-justify">{parsedData.themes.overview}</p>
+                      <p className="text-sm text-gray-800 leading-relaxed text-left">{parsedData.themes.overview}</p>
                     </div>
                   )}
                   

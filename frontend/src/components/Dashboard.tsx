@@ -60,11 +60,8 @@ const Dashboard: React.FC = () => {
       {/* Page Header */}
       <div>
         <h2 className="text-3xl font-bold text-gray-900">
-          n of 1
+          Your precise client list for every funding solicitation
         </h2>
-        <p className="mt-2 text-sm text-gray-600">
-          Your platform to develop target clients based on specific funding solicitations
-        </p>
       </div>
 
       {/* Solicitation Input Form */}
