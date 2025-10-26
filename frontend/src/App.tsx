@@ -10,10 +10,10 @@ function App() {
           <div className="flex justify-between items-center py-4">
             <div className="flex items-center">
               <h1 className="text-2xl font-bold text-gray-900">
-                N-of-1 Platform
+                n of 1
               </h1>
               <span className="ml-3 px-2 py-1 text-xs font-semibold text-blue-600 bg-blue-100 rounded-full">
-                v2.0
+                v3.0
               </span>
             </div>
           </div>

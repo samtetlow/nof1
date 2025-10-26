@@ -457,42 +457,87 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
     # Create detailed paragraph summary (3-5 sentences)
     summary_parts = []
     
+    # Helper to extract complete, grammatical phrases
+    def extract_clean_phrase(text: str, max_chars: int = 150) -> str:
+        """Extract a clean phrase without cutting mid-word or leaving fragments"""
+        if not text or len(text) <= max_chars:
+            return text.strip()
+        
+        # Truncate at max_chars
+        truncated = text[:max_chars].strip()
+        
+        # Find the last complete word
+        last_space = truncated.rfind(' ')
+        if last_space > max_chars * 0.7:  # Only if we're not losing too much
+            truncated = truncated[:last_space].strip()
+        
+        # Remove trailing incomplete punctuation or conjunctions
+        while truncated and truncated[-1] in ',;:-()':
+            truncated = truncated[:-1].strip()
+        
+        # Remove trailing conjunctions
+        trailing_words = ['and', 'or', 'but', 'for', 'with', 'to', 'of', 'in', 'on', 'at', 'by']
+        words = truncated.split()
+        if words and words[-1].lower() in trailing_words:
+            truncated = ' '.join(words[:-1])
+        
+        return truncated.strip()
+    
     # Sentence 1: What is this solicitation about? (Core problem/need)
     if themes["problem_statement"]:
-        summary_parts.append(themes["problem_statement"][:200])
+        clean_stmt = extract_clean_phrase(themes["problem_statement"], 200)
+        summary_parts.append(clean_stmt)
     elif themes["problem_areas"]:
-        summary_parts.append(f"This solicitation seeks innovative solutions to address {themes['problem_areas'][0][:150]}")
+        clean_problem = extract_clean_phrase(themes['problem_areas'][0], 150)
+        if clean_problem:
+            summary_parts.append(f"This solicitation seeks innovative solutions to {clean_problem.lower()}")
     else:
         # Extract first substantial sentence from text
         sentences = [s.strip() for s in re.split(r'[.!?]', text[:800]) if len(s.strip()) > 40]
         if sentences:
-            summary_parts.append(sentences[0][:200])
+            summary_parts.append(extract_clean_phrase(sentences[0], 200))
     
     # Sentence 2: Technical capabilities and expertise needed
     if themes["technical_capabilities"]:
         if len(themes["technical_capabilities"]) >= 3:
             cap_names = [cap["area"] for cap in themes["technical_capabilities"][:3]]
-            summary_parts.append(f"The program requires deep expertise in {', '.join(cap_names[:-1])}, and {cap_names[-1]}")
+            summary_parts.append(f"The program requires expertise in {', '.join(cap_names[:-1])}, and {cap_names[-1]}")
         elif len(themes["technical_capabilities"]) == 2:
             cap_names = [cap["area"] for cap in themes["technical_capabilities"][:2]]
             summary_parts.append(f"The program requires expertise in {cap_names[0]} and {cap_names[1]}")
         else:
             summary_parts.append(f"The program requires expertise in {themes['technical_capabilities'][0]['area']}")
     
-    # Sentence 3: Key priorities or requirements
+    # Sentence 3: Key priorities or requirements  
     if themes["key_priorities"]:
-        priority_text = themes["key_priorities"][0][:150]
-        summary_parts.append(f"Critical requirements include {priority_text.lower()}")
+        clean_priority = extract_clean_phrase(themes["key_priorities"][0], 150)
+        if clean_priority:
+            summary_parts.append(f"Critical requirements include {clean_priority.lower()}")
     
     # Sentence 4: Additional context from second problem area or priority
     if len(themes["problem_areas"]) > 1:
-        second_problem = themes["problem_areas"][1][:120]
-        summary_parts.append(f"Additionally, the solicitation emphasizes {second_problem.lower()}")
+        clean_second = extract_clean_phrase(themes["problem_areas"][1], 120)
+        if clean_second:
+            summary_parts.append(f"The solicitation also emphasizes {clean_second.lower()}")
     elif len(themes["key_priorities"]) > 1:
-        second_priority = themes["key_priorities"][1][:120]
-        summary_parts.append(f"The program also prioritizes {second_priority.lower()}")
+        clean_second_priority = extract_clean_phrase(themes["key_priorities"][1], 120)
+        if clean_second_priority:
+            summary_parts.append(f"Additionally, the program prioritizes {clean_second_priority.lower()}")
     
-    themes["overview"] = ". ".join(summary_parts) + "." if summary_parts else text[:400].strip() + "..."
+    # Join sentences properly
+    formatted_summary = []
+    for part in summary_parts:
+        part = part.strip()
+        if part:
+            # Ensure proper capitalization
+            if part[0].islower():
+                part = part[0].upper() + part[1:]
+            # Ensure proper ending
+            if part[-1] not in '.!?':
+                part += '.'
+            formatted_summary.append(part)
+    
+    themes["overview"] = " ".join(formatted_summary) if formatted_summary else extract_clean_phrase(text, 400) + "."
     
     # Generate Key Topics (robust, comprehensive content with complete sentences)
     key_topics = []
@@ -862,8 +907,8 @@ def root():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "service": "n of 1 Platform",
-        "version": "1.0.1",
+        "service": "n of 1",
+        "version": "3.0",
         "environment": "production",
         "data_sources_available": list(data_source_manager.sources.keys()) if data_source_manager.sources else []
     }

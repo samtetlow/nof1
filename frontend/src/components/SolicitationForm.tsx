@@ -161,14 +161,11 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
 
   return (
     <div className="bg-white rounded-lg shadow-sm p-6">
-      <h3 className="text-lg font-semibold text-gray-900 mb-4">Input Solicitation</h3>
+      <h3 className="text-lg font-semibold text-gray-900 mb-4">Upload Solicitation</h3>
       
       <form onSubmit={handleSubmit} className="space-y-6">
         {/* File Upload */}
         <div className="border-b pb-4">
-          <label className="block text-sm font-medium text-gray-700 mb-3">
-            Upload Solicitation
-          </label>
           
           <div 
             className={`relative flex items-center justify-center w-full ${
@@ -181,10 +178,7 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
           >
             <label className="flex flex-col items-center justify-center w-full h-48 border-2 border-gray-300 border-dashed rounded-lg cursor-pointer transition-colors">
               <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                <svg className="w-12 h-12 mb-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
-                </svg>
-                <p className="mb-2 text-base text-gray-600">
+                <p className="mb-4 text-base text-gray-600">
                   <span className="font-semibold">Drag and drop solicitation file here</span>
                 </p>
                 <p className="text-sm text-gray-500 mb-3">or</p>
@@ -219,7 +213,7 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
         {parsedData && (
           <div className="border-b pb-4">
             <label className="block text-sm font-medium text-gray-700 mb-3">
-              Review Extracted Information
+              Summary of Solicitation
             </label>
             <div className="bg-green-50 border border-green-200 rounded-lg p-4">
               <div className="flex items-start space-x-2">
@@ -227,7 +221,7 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 <div className="flex-1">
-                  <p className="text-sm font-semibold text-green-900 mb-3">Successfully Extracted</p>
+                  <p className="text-sm font-semibold text-green-900 mb-3">Analysis Complete</p>
                   
                   {/* Solicitation Summary - Detailed Paragraph */}
                   {parsedData.themes?.overview && (
