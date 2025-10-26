@@ -248,43 +248,48 @@ def generate_ai_summary(text: str) -> Dict[str, Any]:
         
         chatgpt = data_source_manager.sources["chatgpt"]
         
-        prompt = f"""Analyze this government solicitation and provide a professional analysis.
+        prompt = f"""You are analyzing a government solicitation. Read it carefully and provide an accurate, professional analysis.
 
-Create:
-1. A clear 3-4 sentence summary (100-150 words) covering:
-   - What the solicitation seeks
-   - Key technical requirements
-   - Critical priorities
+Your task:
+1. Write a clear, factual 3-4 sentence summary (100-150 words) that explains:
+   - What this solicitation is seeking (be specific about the goal/problem)
+   - The main technical or professional requirements
+   - Key priorities or evaluation criteria
 
-2. 5-6 key topics as complete, grammatically correct sentences highlighting:
-   - Core technical challenges
-   - Required capabilities
-   - Important requirements
-   - Evaluation criteria
+2. List 5-6 key topics as complete, clear sentences. Each topic should:
+   - Be a complete, grammatically correct sentence
+   - Highlight a specific requirement, capability, challenge, or priority
+   - Be factual and based on the actual solicitation text
+   - Use proper English with clear subject-verb structure
+
+IMPORTANT: Base your analysis ONLY on what is actually written in the solicitation. Do not make assumptions or add generic information.
 
 Respond in JSON format:
 {{
-  "summary": "Professional 3-4 sentence summary...",
+  "summary": "Your factual 3-4 sentence summary based on the actual solicitation content...",
   "key_topics": [
-    "Complete sentence about first topic.",
-    "Complete sentence about second topic.",
-    "etc..."
+    "First complete sentence about a specific requirement or topic from the solicitation.",
+    "Second complete sentence about another specific aspect.",
+    "Third complete sentence...",
+    "Fourth complete sentence...",
+    "Fifth complete sentence...",
+    "Sixth complete sentence..."
   ]
 }}
 
 Solicitation text:
 {text[:4000]}
 
-Return ONLY valid JSON."""
+Return ONLY valid JSON with no additional text or markdown.
 
         response = chatgpt.client.chat.completions.create(
             model=chatgpt.model,
             messages=[
-                {"role": "system", "content": "You are an expert at analyzing government solicitations. Create clear, professional summaries with proper grammar. Always respond with valid JSON only."},
+                {"role": "system", "content": "You are an expert at analyzing government solicitations. Read the solicitation carefully and provide accurate, factual analysis. Write in clear, professional English with proper grammar. Base your analysis only on the actual content provided. Always respond with valid JSON only."},
                 {"role": "user", "content": prompt}
             ],
-            temperature=0.3,
-            max_tokens=1000
+            temperature=0.2,
+            max_tokens=1200
         )
         
         result_text = response.choices[0].message.content.strip()
@@ -1813,17 +1818,23 @@ Key Priorities: {', '.join(themes.get('key_priorities', [])[:5])}
 Technical Capabilities Needed: {', '.join([str(cap) for cap in themes.get('technical_capabilities', [])[:5]])}
 
 TASK: Perform a detailed step-by-step analysis:
-1. Based on what you know about {company_name}, what specific products, services, or capabilities does this company offer?
-2. How do their SPECIFIC capabilities align with the SPECIFIC requirements in this solicitation?
-3. What relevant experience, projects, or clients demonstrate their expertise in this domain?
-4. What are the concrete strengths that make them a good match (be specific)?
-5. What are potential risk factors, gaps, or concerns?
-6. Final recommendation: proceed, reconsider, or reject?
+1. Based on what you know about {company_name}, identify their SPECIFIC products, services, or capabilities
+2. Compare their SPECIFIC capabilities to the SPECIFIC requirements in this solicitation
+3. Identify any relevant experience, clients, projects, or track record in this domain
+4. List concrete strengths that make them a good match (be specific with examples)
+5. Identify any potential risk factors, gaps, or concerns
+6. Make a final recommendation: proceed, reconsider, or reject
 7. Write a detailed 3-4 sentence client-facing paragraph that:
-   - Names SPECIFIC capabilities or products the company has
-   - Explains EXACTLY how these match the solicitation requirements
-   - Mentions their relevant experience or track record
-   - Makes a clear case for why they should be considered
+   - Names SPECIFIC capabilities, products, or services the company offers
+   - Explains EXACTLY how these capabilities address the solicitation requirements
+   - References their relevant experience or proven track record if known
+   - Makes a clear, compelling case for why this company should be considered
+
+IMPORTANT for the alignment_summary: 
+- Be SPECIFIC - mention actual capabilities, not general terms
+- Connect their capabilities DIRECTLY to solicitation requirements
+- Use professional, persuasive language suitable for a client presentation
+- If you don't know specific details, make reasonable inferences based on the company name and industry
 
 Provide your response as JSON with this structure:
 {{
@@ -1831,7 +1842,7 @@ Provide your response as JSON with this structure:
   "confidence_score": float (0-1),
   "recommendation": "proceed" | "reconsider" | "reject",
   "reasoning": "brief summary",
-  "alignment_summary": "3-4 sentence detailed, client-facing paragraph with SPECIFIC reasons why this company aligns, including their specific capabilities, how they match requirements, and relevant experience",
+  "alignment_summary": "3-4 sentence detailed, professional client-facing paragraph that names SPECIFIC capabilities/products this company has, explains EXACTLY how they address the solicitation requirements, and references their relevant experience or track record",
   "chain_of_thought": ["step 1 analysis", "step 2 analysis", ...],
   "findings": {{
     "company_info": "brief company summary based on your knowledge",
@@ -1842,16 +1853,22 @@ Provide your response as JSON with this structure:
   }}
 }}
 
-Be honest and objective. If there are concerns, state them clearly. The alignment_summary should be professional and client-ready."""
+Be honest and objective. If there are concerns, state them clearly. 
+
+CRITICAL: The alignment_summary must be SPECIFIC and DETAILED:
+- Mention actual capabilities, products, or services by name
+- Connect specific company offerings to specific solicitation requirements
+- Use concrete examples and factual details
+- Make it persuasive and client-ready with specific evidence"""
 
         confirmation_response = chatgpt_source.client.chat.completions.create(
             model=chatgpt_source.model,
             messages=[
-                {"role": "system", "content": "You are an independent verification analyst performing objective assessments. Always return valid JSON."},
+                {"role": "system", "content": "You are an independent verification analyst performing objective, detailed assessments. Provide SPECIFIC details about companies including their actual capabilities, products, and services. Connect company offerings DIRECTLY to solicitation requirements with concrete examples. Write in clear, professional English. Always return valid JSON."},
                 {"role": "user", "content": confirmation_prompt}
             ],
-            max_tokens=1200,  # Reduced from 1500 for faster processing
-            temperature=0.3
+            max_tokens=1500,  # Increased for more detailed responses
+            temperature=0.4
         )
         
         result_content = confirmation_response.choices[0].message.content.strip()
