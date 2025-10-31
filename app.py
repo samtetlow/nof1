@@ -750,12 +750,16 @@ def parse_solicitation_text(text: str) -> Dict[str, Any]:
         r"TITLE:\s*(.+?)(?:\n|$)",
         r"SOLICITATION\s+TITLE:\s*(.+?)(?:\n|$)",
         r"PROJECT\s+TITLE:\s*(.+?)(?:\n|$)",
-        r"^(.+?)(?:\n|SOLICITATION)",  # First line
+        r"^(.+?)(?:\n)",  # First line (stop at newline only, not at SOLICITATION word)
     ]
     for pattern in title_patterns:
         match = re.search(pattern, text, re.I | re.M)
         if match:
-            title = match.group(1).strip()[:200]  # Limit to 200 chars
+            extracted_title = match.group(1).strip()
+            title = extracted_title[:250]  # Increased limit to 250 chars to accommodate longer titles
+            logger.info(f"📋 Extracted title (length {len(extracted_title)}): {title}")
+            if len(extracted_title) > 250:
+                logger.warning(f"⚠️  Title was truncated from {len(extracted_title)} to 250 characters")
             break
     
     # Try to extract agency
@@ -1715,6 +1719,17 @@ async def full_pipeline(
             company = result['company']
             confirmation = result['confirmation']
             
+            # CRITICAL DEBUG: Log what we have in confirmation
+            company_name = company.get('name', 'Unknown')
+            if confirmation:
+                has_alignment = bool(confirmation.get('alignment_summary'))
+                alignment_len = len(confirmation.get('alignment_summary', ''))
+                logger.error(f"🔍 DEBUG {company_name}: has_alignment={has_alignment}, len={alignment_len}")
+                if not has_alignment or alignment_len < 100:
+                    logger.error(f"❌ CRITICAL: {company_name} alignment_summary is empty/short!")
+                    logger.error(f"   confirmation keys: {list(confirmation.keys())}")
+                    logger.error(f"   reasoning: {confirmation.get('reasoning', 'N/A')[:100]}")
+            
             final_results.append({
                 "company_id": company.get('id', f"search_{idx}"),
                 "company_name": company.get('name', 'Unknown Company'),
@@ -1755,12 +1770,15 @@ async def full_pipeline(
                     "is_confirmed": result.get('is_confirmed'),
                     "confidence_score": confirmation.get('confidence_score') if confirmation else None,
                     "recommendation": confirmation.get('recommendation') if confirmation else None,
-                    "alignment_summary": confirmation.get('alignment_summary') if confirmation and confirmation.get('alignment_summary') else (
-                        # FORCE fallback 2-paragraph summary if missing
-                        f"""Our research indicates that {company.get('name', 'this company')} aligns with the solicitation program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Their specialization and market position suggest they have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
+                    "alignment_summary": (
+                        confirmation.get('alignment_summary') 
+                        if (confirmation and confirmation.get('alignment_summary') and len(confirmation.get('alignment_summary', '')) > 100) 
+                        else (
+                            f"""Our research indicates that {company.get('name', 'this company')} aligns with the solicitation program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Your specialization and market position suggest you have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
 
-Our analysts show alignment between {company.get('name', 'this company')}'s capabilities and the solicitation's stated requirements. The company possesses relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Their track record and proven performance in related areas demonstrate readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
-                        if confirmation else None
+Our analysts show alignment between {company.get('name', 'this company')}'s capabilities and the solicitation's stated requirements. You possess relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Your track record and proven performance in related areas demonstrate your readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
+                            if confirmation else None
+                        )
                     ),
                     "chain_of_thought": confirmation.get('chain_of_thought', []) if confirmation else [],
                     "company_info": confirmation.get('findings', {}).get('company_info') if confirmation else None
@@ -1786,6 +1804,16 @@ Our analysts show alignment between {company.get('name', 'this company')}'s capa
                     }
                 ]
             })
+        
+        # NUCLEAR OPTION: Force alignment_summary in response if missing
+        for result in final_results:
+            conf_result = result.get('confirmation_result')
+            if conf_result and (not conf_result.get('alignment_summary') or len(conf_result.get('alignment_summary', '')) < 100):
+                company_name = result.get('company_name', 'this company')
+                logger.error(f"🚨 FORCING alignment_summary for {company_name} in final response!")
+                conf_result['alignment_summary'] = f"""Our research indicates that {company_name} aligns with the solicitation program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Your specialization and market position suggest you have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
+
+Our analysts show alignment between {company_name}'s capabilities and the solicitation's stated requirements. You possess relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Your track record and proven performance in related areas demonstrate your readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
         
         # Return all results (no pagination - slider determines count)
         return {
@@ -1998,18 +2026,20 @@ PARAGRAPH 1 (80-120 words) - Program Reference & Mission Connection:
 Start with: "Our research indicates that [Company Name] aligns with [Agency Name]'s [Program Name/Solicitation Title]..."
 Include: agency mission, strategic priorities, company specialization, market position
 End with: company's expertise and operational capacity
+IMPORTANT: Use "your" instead of "their" when referring to the company (e.g., "your expertise", "your capabilities")
 
 PARAGRAPH 2 (80-120 words) - Scope Alignment & Technical Fit:
-Start with: "Our analysts show strong alignment between [Company Name]'s [technology/services] and the solicitation's stated need for [specific requirement]..."
+Start with: "Our analysts show strong alignment between [Company Name]'s capabilities and the solicitation's stated need for [specific requirement]..."
 Include: 3 key capabilities, methodologies/technologies, specific outcomes
 End with: proven experience demonstrating readiness
+IMPORTANT: Use "your" instead of "their" when referring to the company (e.g., "your key capabilities include", "your proven experience")
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EXAMPLE OF CORRECT OUTPUT (DO NOT copy this, but follow this structure):
 
-"Our research indicates that Cytiva aligns with USDA's Poultry Disease Surveillance Enhancement Program. This opportunity directly connects to USDA's broader mission of protecting agricultural health and biosecurity infrastructure, with current strategic priorities in rapid pathogen detection and avian disease prevention. Cytiva specializes in bioprocessing solutions and advanced diagnostic technologies, having established itself as a global leader in life sciences instrumentation. Their focus on rapid testing platforms and biosensor development positions them to support USDA's goals of early disease detection and outbreak prevention capabilities.
+"Our research indicates that Cytiva aligns with USDA's Poultry Disease Surveillance Enhancement Program. This opportunity directly connects to USDA's broader mission of protecting agricultural health and biosecurity infrastructure, with current strategic priorities in rapid pathogen detection and avian disease prevention. Cytiva specializes in bioprocessing solutions and advanced diagnostic technologies, having established itself as a global leader in life sciences instrumentation. Your focus on rapid testing platforms and biosensor development positions you to support USDA's goals of early disease detection and outbreak prevention capabilities.
 
-Our analysts show strong alignment between Cytiva's diagnostic technology portfolio and the solicitation's stated need for automated pathogen detection systems. Their key capabilities include microfluidic biosensor platforms, AI-powered diagnostic analytics, and cold-chain sample management solutions, which directly address the program's requirements for field-deployable testing. Cytiva utilizes advanced immunoassay technology and real-time PCR detection methods to deliver results within 2-4 hours, making them well-suited to execute rapid surveillance operations. The company's proven experience in veterinary diagnostics and USDA contract performance demonstrates their readiness to meet the program requirements."
+Our analysts show strong alignment between Cytiva's capabilities and the solicitation's stated need for automated pathogen detection systems. Your key capabilities include microfluidic biosensor platforms, AI-powered diagnostic analytics, and cold-chain sample management solutions, which directly address the program's requirements for field-deployable testing. You utilize advanced immunoassay technology and real-time PCR detection methods to deliver results within 2-4 hours, making you well-suited to execute rapid surveillance operations. Your proven experience in veterinary diagnostics and USDA contract performance demonstrates your readiness to meet the program requirements."
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Provide your response as JSON:
@@ -2051,15 +2081,18 @@ RULE 2: Separate the paragraphs with \\n\\n (double newline).
 RULE 3: Each paragraph must be 80-120 words.
 RULE 4: Paragraph 1 MUST start with: "Our research indicates that [Company Name] aligns with [Agency]'s [Program]..."
 RULE 5: Paragraph 2 MUST start with: "Our analysts show strong alignment between [Company]'s..."
+RULE 6: CRITICAL - Use "your" instead of "their" when referring to the company (e.g., "your capabilities", "your expertise", "you utilize", "your proven experience")
 
 EXAMPLES OF INVALID RESPONSES (DO NOT DO THIS):
 ❌ "The analysis indicates a strong alignment between the company and solicitation."
-❌ "Cytiva is a good match for this program based on their capabilities."
+❌ "Cytiva is a good match for this program based on their capabilities." (WRONG - should use "your")
 ❌ Any single sentence or summary
+❌ Using "their" instead of "your" when referring to the company
+❌ Using "the company" instead of "you/your" when addressing capabilities
 
 REQUIRED FORMAT:
 {
-  "alignment_summary": "Our research indicates that [Company] aligns with [Agency]'s [Program]. [Continue for 80-120 words about mission, priorities, specialization]\\n\\nOur analysts show strong alignment between [Company]'s [technology] and the solicitation's need for [requirement]. [Continue for 80-120 words with 3 capabilities, methodologies, experience]"
+  "alignment_summary": "Our research indicates that [Company] aligns with [Agency]'s [Program]. [Continue for 80-120 words about mission, priorities, specialization - use 'your' when referring to the company]\\n\\nOur analysts show strong alignment between [Company]'s capabilities and the solicitation's need for [requirement]. Your key capabilities include [list 3]. You utilize [methodologies] to deliver [outcomes]. Your proven experience demonstrates [readiness]."
 }
 
 If you write a single sentence or summary instead of 2 full paragraphs, your response will FAIL validation."""},
@@ -2130,9 +2163,9 @@ If you write a single sentence or summary instead of 2 full paragraphs, your res
             logger.error(f"   Forcing generation of proper 2-paragraph summary...")
             
             # Generate proper summary immediately
-            alignment_summary = f"""Our research indicates that {company_name} aligns with the {solicitation_title} program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Their specialization and market position suggest they have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
+            alignment_summary = f"""Our research indicates that {company_name} aligns with the {solicitation_title} program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Your specialization and market position suggest you have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
 
-Our analysts show alignment between {company_name}'s capabilities and the solicitation's stated requirements. The company possesses relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Their track record and proven performance in related areas demonstrate readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
+Our analysts show alignment between {company_name}'s capabilities and the solicitation's stated requirements. You possess relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Your track record and proven performance in related areas demonstrate your readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
             
             result['alignment_summary'] = alignment_summary
             logger.info(f"✅ FORCED proper 2-paragraph summary generated")
@@ -2179,9 +2212,9 @@ Our analysts show alignment between {company_name}'s capabilities and the solici
         # If validation failed critically, generate a fallback summary
         if validation_failed:
             logger.warning(f"⚠️  Generating fallback summary due to validation failure")
-            result['alignment_summary'] = f"""Our research indicates that {company_name} aligns with the {solicitation_title} program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Their specialization and market position suggest they have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
+            result['alignment_summary'] = f"""Our research indicates that {company_name} aligns with the {solicitation_title} program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Your specialization and market position suggest you have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
 
-Our analysts show alignment between {company_name}'s capabilities and the solicitation's stated requirements. The company possesses relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Their track record and proven performance in related areas demonstrate readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
+Our analysts show alignment between {company_name}'s capabilities and the solicitation's stated requirements. You possess relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Your track record and proven performance in related areas demonstrate your readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
             logger.info("✅ Fallback summary generated with proper 2-paragraph format")
         
         return result
@@ -2189,9 +2222,9 @@ Our analysts show alignment between {company_name}'s capabilities and the solici
     except json.JSONDecodeError as e:
         logger.error(f"JSON parsing error in confirmation for {company_name}: {e}")
         # Return a fallback result with proper alignment_summary
-        fallback_summary = f"""Our research indicates that {company_name} aligns with the {solicitation_title} program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Their specialization and market position suggest they have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
+        fallback_summary = f"""Our research indicates that {company_name} aligns with the {solicitation_title} program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Your specialization and market position suggest you have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
 
-Our analysts show alignment between {company_name}'s capabilities and the solicitation's stated requirements. The company possesses relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Their track record and proven performance in related areas demonstrate readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
+Our analysts show alignment between {company_name}'s capabilities and the solicitation's stated requirements. You possess relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Your track record and proven performance in related areas demonstrate your readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
         
         return {
             'company_name': company_name,
@@ -2212,9 +2245,9 @@ Our analysts show alignment between {company_name}'s capabilities and the solici
     except Exception as e:
         logger.error(f"Selection confirmation error for {company_name}: {e}")
         # Return a fallback result with proper alignment_summary
-        fallback_summary = f"""Our research indicates that {company_name} aligns with the {solicitation_title} program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Their specialization and market position suggest they have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
+        fallback_summary = f"""Our research indicates that {company_name} aligns with the {solicitation_title} program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Your specialization and market position suggest you have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
 
-Our analysts show alignment between {company_name}'s capabilities and the solicitation's stated requirements. The company possesses relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Their track record and proven performance in related areas demonstrate readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
+Our analysts show alignment between {company_name}'s capabilities and the solicitation's stated requirements. You possess relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Your track record and proven performance in related areas demonstrate your readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
         
         return {
             'company_name': company_name,

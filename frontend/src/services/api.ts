@@ -134,6 +134,16 @@ export interface PipelineResponse {
   companies_evaluated: number;
   top_matches_analyzed: number;
   results: MatchResult[];
+  pagination?: {
+    total_matches_above_50: number;
+    current_batch: number;
+    has_more: boolean;
+    remaining: number;
+    next_index: number;
+  };
+  unconfirmed_companies?: any[];  // For pagination
+  themes?: any;
+  solicitation_title?: string;
 }
 
 // API Methods
@@ -215,6 +225,21 @@ export const apiService = {
       
       return response.data;
     });
+  },
+
+  async loadNextBatch(
+    companies: any[],
+    themes: any,
+    solicitationTitle: string,
+    startIndex: number
+  ): Promise<any> {
+    const response = await api.post('/api/load-next-batch', {
+      companies,
+      themes,
+      solicitation_title: solicitationTitle,
+      start_index: startIndex
+    });
+    return response.data;
   },
 
   async matchWithConfirmation(

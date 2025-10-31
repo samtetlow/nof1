@@ -256,7 +256,7 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
                     {parsedData.title && <p><span className="font-medium">Title:</span> {parsedData.title}</p>}
                     {parsedData.agency && <p><span className="font-medium">Agency:</span> {parsedData.agency}</p>}
                   </div>
-                  <p className="text-xs text-green-700 mt-2">✓ Ready to analyze!</p>
+                  <p className="text-xs text-green-700 mt-2">✓ Ready to Search!</p>
                 </div>
               </div>
             </div>

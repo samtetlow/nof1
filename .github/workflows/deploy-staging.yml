@@ -1,0 +1,75 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [ n-of-1-production ]
+  workflow_dispatch:
+
+jobs:
+  deploy-backend:
+    runs-on: ubuntu-latest
+    environment: staging
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Deploy to Railway (Staging)
+      env:
+        RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      run: |
+        npm install -g @railway/cli
+        railway link ${{ secrets.RAILWAY_PROJECT_ID }}
+        railway up --service backend-staging
+    
+    - name: Wait for deployment
+      run: sleep 60
+    
+    - name: Health check
+      run: |
+        curl -f ${{ secrets.STAGING_BACKEND_URL }}/health || exit 1
+  
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    environment: staging
+    needs: deploy-backend
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+    
+    - name: Install Vercel CLI
+      run: npm install -g vercel
+    
+    - name: Deploy to Vercel (Staging)
+      env:
+        VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      run: |
+        cd frontend
+        vercel --token=$VERCEL_TOKEN --scope=$VERCEL_ORG_ID --yes --env=staging
+  
+  smoke-tests:
+    runs-on: ubuntu-latest
+    needs: [deploy-backend, deploy-frontend]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Run smoke tests
+      env:
+        STAGING_URL: ${{ secrets.STAGING_FRONTEND_URL }}
+      run: |
+        curl -f $STAGING_URL || exit 1
+        echo "✅ Staging deployment successful"
+
+
+
+

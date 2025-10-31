@@ -1,0 +1,16 @@
+# Railway Backend Environment Variables
+# Copy these to Railway Dashboard > Variables tab
+
+OPENAI_API_KEY=your_openai_api_key_here
+PORT=8000
+PYTHON_VERSION=3.11.9
+
+# Optional: Add other API keys if you have them
+# ANTHROPIC_API_KEY=your_anthropic_key
+# GOOGLE_API_KEY=your_google_key
+# GOOGLE_SEARCH_ENGINE_ID=your_search_engine_id
+# HUBSPOT_API_KEY=your_hubspot_key
+
+# Database (Leave empty to use SQLite, or Railway will auto-provide PostgreSQL URL)
+# DATABASE_URL=postgresql://user:password@host:port/dbname
+

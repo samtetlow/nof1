@@ -25,3 +25,11 @@ openai>=1.54.0
 # Optional: Additional utilities
 python-dateutil==2.8.2
 
+# Testing dependencies
+pytest==7.4.3
+pytest-cov==4.1.0
+pytest-asyncio==0.21.1
+pytest-mock==3.12.0
+httpx==0.25.1  # Already listed above, needed for TestClient
+coverage==7.3.2
+

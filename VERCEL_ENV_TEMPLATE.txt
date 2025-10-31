@@ -1,0 +1,9 @@
+# Vercel Frontend Environment Variables
+# Copy these to Vercel Dashboard > Settings > Environment Variables
+
+# CRITICAL: Replace with your actual Railway backend URL after deploying backend
+REACT_APP_API_URL=https://your-railway-backend-url.up.railway.app
+
+# Example with actual Railway domain:
+# REACT_APP_API_URL=https://web-production-978ba.up.railway.app
+

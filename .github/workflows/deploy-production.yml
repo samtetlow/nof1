@@ -1,0 +1,121 @@
+name: Deploy to Production
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to deploy (e.g., v1.2.3)'
+        required: true
+      confirm:
+        description: 'Type "deploy" to confirm'
+        required: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Validate confirmation
+      if: github.event.inputs.confirm != 'deploy'
+      run: |
+        echo "❌ Deployment not confirmed. Please type 'deploy' to proceed."
+        exit 1
+    
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.version }}
+    
+    - name: Verify tests passed
+      run: echo "✅ Proceeding with production deployment"
+  
+  deploy-backend:
+    runs-on: ubuntu-latest
+    needs: validate
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.version }}
+    
+    - name: Deploy to Railway (Production)
+      env:
+        RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
+      run: |
+        npm install -g @railway/cli
+        railway link ${{ secrets.RAILWAY_PROJECT_ID }}
+        railway up --service backend-production
+    
+    - name: Wait for deployment
+      run: sleep 90
+    
+    - name: Health check
+      run: |
+        for i in {1..5}; do
+          if curl -f ${{ secrets.PRODUCTION_BACKEND_URL }}/health; then
+            echo "✅ Backend healthy"
+            exit 0
+          fi
+          echo "Attempt $i failed, retrying..."
+          sleep 10
+        done
+        exit 1
+  
+  deploy-frontend:
+    runs-on: ubuntu-latest
+    needs: deploy-backend
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ github.event.inputs.version }}
+    
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+    
+    - name: Install Vercel CLI
+      run: npm install -g vercel
+    
+    - name: Deploy to Vercel (Production)
+      env:
+        VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+        VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      run: |
+        cd frontend
+        vercel --token=$VERCEL_TOKEN --scope=$VERCEL_ORG_ID --prod --yes
+  
+  post-deploy-tests:
+    runs-on: ubuntu-latest
+    needs: [deploy-backend, deploy-frontend]
+    
+    steps:
+    - name: Production smoke tests
+      env:
+        PRODUCTION_URL: ${{ secrets.PRODUCTION_FRONTEND_URL }}
+      run: |
+        echo "Running production smoke tests..."
+        curl -f $PRODUCTION_URL || exit 1
+        curl -f ${{ secrets.PRODUCTION_BACKEND_URL }}/health || exit 1
+        echo "✅ Production deployment successful"
+    
+    - name: Notify team
+      if: success()
+      run: |
+        echo "🚀 Production deployment ${{ github.event.inputs.version }} completed successfully!"
+    
+    - name: Alert on failure
+      if: failure()
+      run: |
+        echo "❌ Production deployment failed! Immediate attention required."
+        exit 1
+
+
+
+

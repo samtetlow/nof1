@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { PipelineResponse, MatchResult } from '../services/api';
+import { PipelineResponse, MatchResult, apiService } from '../services/api';
 import ScoreVisualization from './ScoreVisualization';
 import SelectionConfirmation from './SelectionConfirmation';
 
@@ -13,6 +13,41 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ results, solicitationTe
   const [selectedCompany, setSelectedCompany] = useState<MatchResult | null>(
     results.results[0] || null
   );
+  const [allResults, setAllResults] = useState<MatchResult[]>(results.results);
+  const [pagination, setPagination] = useState(results.pagination);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const handleLoadNext15 = async () => {
+    if (!results.unconfirmed_companies || !results.themes || !pagination) return;
+    
+    setLoadingMore(true);
+    try {
+      const response = await apiService.loadNextBatch(
+        results.unconfirmed_companies,
+        results.themes,
+        results.solicitation_title || 'Solicitation',
+        pagination.next_index
+      );
+      
+      // Append new results
+      setAllResults([...allResults, ...response.results]);
+      
+      // Update pagination
+      setPagination({
+        total_matches_above_50: pagination.total_matches_above_50,
+        current_batch: pagination.current_batch + 15,
+        has_more: response.has_more,
+        remaining: response.remaining,
+        next_index: response.next_index
+      });
+      
+    } catch (error) {
+      console.error('Error loading next batch:', error);
+      alert('Failed to load next batch of companies. Please try again.');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -23,7 +58,7 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ results, solicitationTe
           <div className="bg-white rounded-lg shadow-sm p-4 sticky top-4">
             <h4 className="text-sm font-semibold text-gray-900 mb-3">Top Matches</h4>
             <div className="space-y-2 max-h-[calc(100vh-200px)] overflow-y-auto pr-2 custom-scrollbar">
-              {results.results.map((result, idx) => {
+              {allResults.map((result, idx) => {
                 const isConfirmed = result.confirmation_result?.is_confirmed;
                 const confirmationScore = result.confirmation_result?.confidence_score;
                 
@@ -205,25 +240,25 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ results, solicitationTe
         <p className="text-sm text-gray-600 mb-4">Detailed breakdown of all companies analyzed for this solicitation</p>
         
         <div className="overflow-x-auto -mx-6 px-6">
-          <table className="min-w-full divide-y divide-gray-200">
+          <table className="w-full divide-y divide-gray-200" style={{ minWidth: '1600px' }}>
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider whitespace-nowrap" style={{ width: '15%' }}>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider whitespace-nowrap" style={{ width: '180px' }}>
                   Company Name
                 </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider whitespace-nowrap" style={{ width: '20%' }}>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider whitespace-nowrap" style={{ width: '150px' }}>
                   Company URL
                 </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider whitespace-nowrap" style={{ width: '15%' }}>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider whitespace-nowrap" style={{ width: '200px' }}>
                   File Name
                 </th>
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider" style={{ width: '50%' }}>
+                <th className="px-4 py-3 text-left text-xs font-medium text-gray-700 uppercase tracking-wider" style={{ width: '1070px' }}>
                   Why a Match
                 </th>
               </tr>
             </thead>
             <tbody className="bg-white divide-y divide-gray-200">
-              {results.results.map((result, idx) => {
+              {allResults.map((result, idx) => {
                 const solicitationName = uploadedFileName || results.solicitation_summary?.title || 'Solicitation';
                 
                 // Clean up company name - remove Inc., LLC, Corp., etc.
@@ -231,55 +266,16 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ results, solicitationTe
                   .replace(/,?\s*(Inc\.?|LLC\.?|Ltd\.?|Corp\.?|Corporation|Limited|Co\.?|Company|LP|LLP|PLLC|PC)\s*$/gi, '')
                   .trim();
                 
-                // Build COMPREHENSIVE client-facing "Why a Match" content
-                const alignmentSummary = result.confirmation_result?.alignment_summary || 
-                                        result.decision_rationale || 
-                                        '';
+                // Use ONLY the alignment_summary - this is the new 2-paragraph format
+                let whyMatchContent = result.confirmation_result?.alignment_summary || 
+                                      result.decision_rationale || 
+                                      '';
                 
-                const findings = result.confirmation_result?.findings;
-                
-                // Start with the main alignment summary (should be 8-12 sentences)
-                let whyMatchContent = alignmentSummary;
-                
-                // Add ALL detailed findings to make it comprehensive
-                if (findings) {
-                  const sections = [];
-                  
-                  // Company Profile Section
-                  if (findings.company_info) {
-                    sections.push(`\n\nCOMPANY PROFILE:\n${findings.company_info}`);
-                  }
-                  
-                  // Capability Analysis Section
-                  if (findings.capability_match) {
-                    sections.push(`\n\nCAPABILITY ANALYSIS:\n${findings.capability_match}`);
-                  }
-                  
-                  // Experience Assessment Section
-                  if (findings.experience_assessment) {
-                    sections.push(`\n\nEXPERIENCE ASSESSMENT:\n${findings.experience_assessment}`);
-                  }
-                  
-                  // Key Strengths Section
-                  if (findings.strengths && findings.strengths.length > 0) {
-                    sections.push(`\n\nKEY STRENGTHS:\n${findings.strengths.map((s, i) => `${i + 1}. ${s}`).join('\n')}`);
-                  }
-                  
-                  // Add all sections
-                  if (sections.length > 0) {
-                    whyMatchContent += sections.join('');
-                  }
-                }
-                
-                // Comprehensive fallback if no content
-                if (!whyMatchContent || whyMatchContent.trim().length < 100) {
-                  whyMatchContent = `Our research indicates that ${cleanCompanyName} is a company operating in the relevant sector with capabilities aligned to this solicitation's requirements. Our analysts show they possess the technical expertise and operational capacity needed to address the program objectives outlined in the solicitation.
+                // Fallback if no content (also 2-paragraph format)
+                if (!whyMatchContent || whyMatchContent.trim().length < 50) {
+                  whyMatchContent = `Our research indicates that ${cleanCompanyName} aligns with this opportunity based on your sector expertise and capabilities. You specialize in relevant domains and have established operational capacity needed to address this program's objectives. Your focus positions you to support the goals of this solicitation.
 
-The company's service offerings and technical capabilities directly correspond to the key requirements specified in this opportunity. Their experience in delivering solutions within this domain demonstrates their understanding of the challenges and objectives central to this program. ${cleanCompanyName} has established operational processes and methodologies that align with the solicitation's technical and programmatic needs.
-
-Our analysts reveal that ${cleanCompanyName}'s organizational structure and resource base position them to execute on the requirements detailed in this solicitation. The company's proven track record in similar engagements provides confidence in their ability to deliver results. Their technical approach and operational capabilities make them a viable candidate for this opportunity.
-
-Based on the alignment between their established capabilities and the solicitation requirements, ${cleanCompanyName} represents a strong match for this program. Their relevant experience and technical expertise suggest they are well-positioned to address the objectives and deliver the outcomes sought by this opportunity.`;
+Our analysts show alignment between ${cleanCompanyName}'s technology and services and the solicitation's stated needs. Your capabilities directly address key focus areas. Your proven experience demonstrates your readiness to meet the program requirements.`;
                 }
                 
                 return (
@@ -322,11 +318,39 @@ Based on the alignment between their established capabilities and the solicitati
           </table>
         </div>
         
-        {/* Table Footer */}
+        {/* Table Footer with Pagination Info */}
         <div className="mt-4 pt-4 border-t border-gray-200">
-          <p className="text-xs text-gray-500">
-            Table showing {results.results.length} companies analyzed for "{results.solicitation_summary?.title || 'this solicitation'}"
-          </p>
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm font-medium text-gray-900">
+                Showing {allResults.length} of {pagination?.total_matches_above_50 || allResults.length} companies
+              </p>
+              <p className="text-xs text-gray-500 mt-1">
+                Complete Analysis Summary provided for "{results.solicitation_summary?.title || 'this solicitation'}"
+              </p>
+            </div>
+            
+            {/* Load Next 15 Button */}
+            {pagination?.has_more && (
+              <button
+                onClick={handleLoadNext15}
+                disabled={loadingMore}
+                className={`px-6 py-3 ${loadingMore ? 'bg-gray-400' : 'bg-blue-600 hover:bg-blue-700'} text-white font-medium rounded-lg transition-colors flex items-center`}
+              >
+                {loadingMore ? (
+                  <>
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
+                    Loading...
+                  </>
+                ) : (
+                  <>
+                    Load Next 15
+                    <span className="ml-2 text-sm">({pagination.remaining} remaining)</span>
+                  </>
+                )}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
