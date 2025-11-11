@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
 import { PipelineResponse, MatchResult, apiService } from '../services/api';
 import ScoreVisualization from './ScoreVisualization';
-import SelectionConfirmation from './SelectionConfirmation';
 import WebsiteValidationPanel from './WebsiteValidationPanel';
 
 interface ResultsDisplayProps {
