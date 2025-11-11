@@ -4,5 +4,18 @@
   "framework": "create-react-app",
   "env": {
     "REACT_APP_API_URL": "https://nof1-backend.onrender.com"
-  }
+  },
+  "redirects": [
+    {
+      "source": "/:path*",
+      "has": [
+        {
+          "type": "host",
+          "value": "nof1-five.vercel.app"
+        }
+      ],
+      "destination": "https://nof1.streamlineclimate.com/:path*",
+      "permanent": true
+    }
+  ]
 }
