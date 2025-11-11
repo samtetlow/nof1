@@ -265,8 +265,8 @@ class ThemeBasedSearch:
         
         try:
             # Request 50% more companies than needed to account for deduplication/filtering
-            # Minimum of max_companies, maximum of max_companies * 1.5
-            requested_count = max(max_companies, min(int(max_companies * 1.5), 50))
+            # Minimum of max_companies, maximum of max_companies * 1.5 (capped at 300)
+            requested_count = max(max_companies, min(int(max_companies * 1.5), 300))
             logger.info(f"Requesting {requested_count} companies from ChatGPT (will return top {max_companies})")
             
             # Call ChatGPT's search_contracts with themes, max count, type, and size filter

@@ -7,7 +7,7 @@ const api = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 600000, // 10 minute timeout for long-running operations
+  timeout: 1200000, // 20 minute timeout for long-running operations (100 companies)
   validateStatus: (status) => status < 500, // Don't throw on 4xx errors
 });
 
@@ -100,6 +100,18 @@ export interface MatchResult {
   confirmation_status: string;
   enrichment_sources: string[];
   data_quality_score: number;
+  capabilities?: string[];
+  website_validation?: {
+    available: boolean;
+    website_url: string;
+    validation_endpoint: string;
+    pre_validated?: boolean;
+    validation_score?: number;
+    confirmed_capabilities?: string[];
+    website_capabilities?: string[];
+    gaps_count?: number;
+    partnering_opportunities_count?: number;
+  };
   confirmation_result?: {
     is_confirmed: boolean;
     confidence_score: number;
@@ -140,6 +152,12 @@ export interface PipelineResponse {
     has_more: boolean;
     remaining: number;
     next_index: number;
+  };
+  shortage_notice?: {
+    requested: number;
+    delivered: number;
+    filtered_out: number;
+    message: string;
   };
   unconfirmed_companies?: any[];  // For pagination
   themes?: any;
@@ -295,6 +313,18 @@ export const apiService = {
       solicitation_text: solicitationText,
       solicitation_title: solicitationTitle,
     });
+    return response.data;
+  },
+
+  // Website Validation
+  async validateWebsite(params: {
+    company_name: string;
+    company_website: string;
+    company_capabilities: string[];
+    solicitation_title: string;
+    required_capabilities: string[];
+  }): Promise<any> {
+    const response = await api.post('/api/validate-website', params);
     return response.data;
   },
 };

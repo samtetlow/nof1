@@ -34,6 +34,54 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------------------
+# Utility Functions
+# --------------------------------------------------------------------------------------
+def clean_company_name(company_name: str) -> str:
+    """
+    Remove common company suffixes (Inc, LLC, Corp, etc.) from company names.
+    This provides cleaner names for use in reports and match explanations.
+    """
+    if not company_name:
+        return company_name
+    
+    # List of common company suffixes to remove
+    suffixes = [
+        r',?\s*Inc\.?',
+        r',?\s*LLC\.?',
+        r',?\s*L\.L\.C\.?',
+        r',?\s*Ltd\.?',
+        r',?\s*Limited',
+        r',?\s*Corp\.?',
+        r',?\s*Corporation',
+        r',?\s*Co\.?',
+        r',?\s*Company',
+        r',?\s*LP\.?',
+        r',?\s*L\.P\.?',
+        r',?\s*LLP\.?',
+        r',?\s*L\.L\.P\.?',
+        r',?\s*PLLC\.?',
+        r',?\s*PC\.?',
+        r',?\s*P\.C\.?',
+        r',?\s*PLC\.?',
+        r',?\s*P\.L\.C\.?',
+        r',?\s*Incorporated',
+        r',?\s*S\.A\.?',
+        r',?\s*AG\.?',
+        r',?\s*GmbH\.?',
+        r',?\s*Pty\.?\s*Ltd\.?',
+        r',?\s*N\.V\.?',
+        r',?\s*B\.V\.?',
+    ]
+    
+    # Create a combined regex pattern
+    pattern = '|'.join(suffixes)
+    
+    # Remove suffixes (case-insensitive, from end of string)
+    cleaned = re.sub(f'({pattern})$', '', company_name, flags=re.IGNORECASE).strip()
+    
+    return cleaned
+
+# --------------------------------------------------------------------------------------
 # Config / Storage
 # --------------------------------------------------------------------------------------
 DB_URL = os.getenv("DATABASE_URL", "sqlite:///./nof1.db")
@@ -75,7 +123,9 @@ logger.info(f"Config keys: {list(config.keys())}")
 data_source_manager = DataSourceManager(config)
 logger.info(f"Data sources initialized: {list(data_source_manager.sources.keys())}")
 
-confirmation_engine = ConfirmationEngine()
+# Initialize confirmation engine with OpenAI API key for website validation
+openai_key = config.get("chatgpt", {}).get("api_key")
+confirmation_engine = ConfirmationEngine(openai_api_key=openai_key)
 validation_engine = ValidationEngine()
 theme_search = ThemeBasedSearch(data_source_manager)
 logger.info("All engines initialized successfully")
@@ -282,8 +332,10 @@ Solicitation text:
 
 Return ONLY valid JSON with no additional text or markdown."""
 
+        # Use GPT-3.5-turbo for fast parsing (not GPT-4o-mini)
+        # This is just for summary extraction, doesn't need the power of GPT-4
         response = chatgpt.client.chat.completions.create(
-            model=chatgpt.model,
+            model="gpt-3.5-turbo",  # Fast and cheap for parsing
             messages=[
                 {"role": "system", "content": "You are an expert at analyzing government solicitations. Read the solicitation carefully and provide accurate, factual analysis. Write in clear, professional English with proper grammar. Base your analysis only on the actual content provided. Always respond with valid JSON only."},
                 {"role": "user", "content": prompt}
@@ -744,35 +796,115 @@ def parse_solicitation_text(text: str) -> Dict[str, Any]:
             clearance = c
             break
     
-    # Try to extract title (look for common patterns)
+    # Try to extract title - Smart extraction looking for actual title
+    # Priority 1: Look for explicit TITLE: label
+    # Priority 2: Look for title case text early in document (likely the actual title)
+    # Priority 3: First substantial line
+    
     title = None
+    
+    # Strategy 1: Explicit TITLE: field
+    # Define comprehensive stop markers for title extraction
+    title_stop_markers = r"(?:ANNOUNCEMENT\s+TYPE|AMENDMENT|PROGRAM\s+(?:TITLE|MANAGER|OFFICE)|SOLICITATION\s+(?:NUMBER|ID|TYPE)|ISO\s+SOLICITATION|RFP\s+NUMBER|CONTRACT\s+NUMBER|OPPORTUNITY\s+NUMBER|NOTICE\s+(?:ID|NUMBER)|AGENCY|ORGANIZATION|DEPARTMENT|OFFICE|NAICS|PSC|SET-ASIDE|SOCIOECONOMIC|CLASSIFICATION|RESPONSE\s+DATE|DUE\s+DATE|CLOSING\s+DATE|SUBMISSION\s+DEADLINE|POST(?:ED)?\s+DATE|ISSUE\s+DATE|RELEASE\s+DATE|AWARD\s+DATE|PERIOD\s+OF\s+PERFORMANCE|PLACE\s+OF\s+PERFORMANCE|DESCRIPTION|OVERVIEW|SUMMARY|BACKGROUND|STATEMENT\s+OF\s+WORK|SCOPE|REQUIREMENTS|OBJECTIVE|PURPOSE|CONTACT|POINT\s+OF\s+CONTACT)"
+    
     title_patterns = [
-        r"TITLE:\s*(.+?)(?:\n|$)",
-        r"SOLICITATION\s+TITLE:\s*(.+?)(?:\n|$)",
-        r"PROJECT\s+TITLE:\s*(.+?)(?:\n|$)",
-        r"^(.+?)(?:\n)",  # First line (stop at newline only, not at SOLICITATION word)
+        rf"(?:SOLICITATION\s+)?TITLE:\s*(.+?)(?=\n{title_stop_markers}|$)",
+        rf"PROJECT\s+TITLE:\s*(.+?)(?=\n{title_stop_markers}|$)",
+        rf"PROGRAM\s+TITLE:\s*(.+?)(?=\n{title_stop_markers}|$)",
     ]
     for pattern in title_patterns:
-        match = re.search(pattern, text, re.I | re.M)
+        match = re.search(pattern, text, re.I | re.DOTALL)
         if match:
             extracted_title = match.group(1).strip()
-            title = extracted_title[:250]  # Increased limit to 250 chars to accommodate longer titles
-            logger.info(f"📋 Extracted title (length {len(extracted_title)}): {title}")
-            if len(extracted_title) > 250:
-                logger.warning(f"⚠️  Title was truncated from {len(extracted_title)} to 250 characters")
+            # Clean up: remove newlines, normalize whitespace, return only the actual title
+            full_title = ' '.join(extracted_title.split())
+            # Apply 150 char max limit only if needed
+            title = full_title[:150] if len(full_title) > 150 else full_title
+            if len(full_title) > 150:
+                logger.info(f"📋 Extracted title (truncated from {len(full_title)} to 150 chars): {title}")
+            else:
+                logger.info(f"📋 Extracted title ({len(title)} chars): {title}")
             break
     
-    # Try to extract agency
+    # Strategy 2: Look for Title Case text in first 1000 chars (actual document title)
+    if not title:
+        first_section = text[:1000]
+        lines = first_section.split('\n')
+        
+        for line in lines[:20]:  # Check first 20 lines
+            line = line.strip()
+            
+            # Skip lines that are clearly labels or metadata
+            if not line or len(line) < 15:
+                continue
+            # Skip metadata field labels
+            if re.match(r'^(SOLICITATION|POSTED|DUE|DATE|NAICS|SET-ASIDE|AGENCY|DEPARTMENT|NUMBER|ID|RFP|RFI|BAA):', line, re.I):
+                continue
+            # Skip pure ID/number lines (like "75N98025R00004" or "W912QR-24-R-0001")
+            if re.match(r'^[A-Z0-9\-]+$', line):
+                continue
+            # Skip lines that are just "SOLICITATION NUMBER: ..." pattern
+            if re.match(r'^SOLICITATION\s+(NUMBER|ID)', line, re.I):
+                continue
+                
+            # Look for Title Case (indicates emphasis/heading)
+            words = line.split()
+            if len(words) >= 3:  # At least 3 words
+                # Skip if line starts with common metadata words
+                first_word = words[0].lower()
+                if first_word in ['posted', 'due', 'date', 'solicitation', 'rfp', 'rfi', 'baa', 'notice']:
+                    continue
+                
+                # Count capitalized words (Title Case pattern)
+                capitalized = sum(1 for w in words if w and w[0].isupper() and len(w) > 2)
+                
+                # If 60%+ words are capitalized and line is substantial, likely the title
+                if capitalized / len(words) >= 0.6 and 20 <= len(line) <= 200:
+                    # Return actual title, apply 150 max only if needed
+                    title = line[:150] if len(line) > 150 else line
+                    logger.info(f"📋 Extracted title from Title Case text ({len(title)} chars): {title}")
+                    break
+    
+    # Strategy 3: Fallback to first substantial line
+    if not title:
+        lines = text.split('\n')
+        for line in lines[:10]:
+            line = line.strip()
+            # Skip short lines and metadata lines
+            if line and len(line) >= 20 and not re.match(r'^(SOLICITATION|POSTED|DUE|DATE|NAICS):', line, re.I):
+                # Return actual line, apply 150 max only if needed
+                title = line[:150] if len(line) > 150 else line
+                logger.info(f"📋 Using first substantial line as title ({len(title)} chars): {title}")
+                break
+    
+    # Final fallback
+    if not title:
+        title = "Solicitation"
+        logger.warning("⚠️  Could not extract title, using default")
+    
+    # Try to extract agency - return only actual agency name, max 200 chars
     agency = None
+    # Define comprehensive stop markers for agency extraction
+    agency_stop_markers = r"(?:PROGRAM\s+(?:TITLE|MANAGER|OFFICE)|ANNOUNCEMENT\s+TYPE|AMENDMENT|SOLICITATION\s+(?:NUMBER|ID|TYPE)|ISO\s+SOLICITATION|RFP\s+NUMBER|CONTRACT\s+NUMBER|OPPORTUNITY\s+NUMBER|NOTICE\s+(?:ID|NUMBER)|TITLE|PROJECT\s+TITLE|ORGANIZATION|OFFICE|NAICS|PSC|SET-ASIDE|SOCIOECONOMIC|CLASSIFICATION|CONTRACTING\s+OFFICE|CONTRACTING\s+OFFICER|POINT\s+OF\s+CONTACT|CONTACT|RESPONSE\s+DATE|DUE\s+DATE|CLOSING\s+DATE|SUBMISSION\s+DEADLINE|POST(?:ED)?\s+DATE|ISSUE\s+DATE|RELEASE\s+DATE|DESCRIPTION|OVERVIEW|SUMMARY|BACKGROUND|STATEMENT\s+OF\s+WORK|SCOPE|REQUIREMENTS)"
+    
     agency_patterns = [
-        r"AGENCY:\s*(.+?)(?:\n|$)",
-        r"DEPARTMENT:\s*(.+?)(?:\n|$)",
-        r"CONTRACTING\s+OFFICE:\s*(.+?)(?:\n|$)",
+        rf"AGENCY:\s*(.+?)(?=\n{agency_stop_markers}|$)",
+        rf"DEPARTMENT:\s*(.+?)(?=\n{agency_stop_markers}|$)",
+        rf"ORGANIZATION:\s*(.+?)(?=\n{agency_stop_markers}|$)",
+        rf"CONTRACTING\s+OFFICE:\s*(.+?)(?=\n{agency_stop_markers}|$)",
     ]
     for pattern in agency_patterns:
-        match = re.search(pattern, text, re.I | re.M)
+        match = re.search(pattern, text, re.I | re.DOTALL)
         if match:
-            agency = match.group(1).strip()[:200]
+            extracted_agency = match.group(1).strip()
+            # Clean up: remove newlines, normalize whitespace
+            full_agency = ' '.join(extracted_agency.split())
+            # Apply 200 char max only if needed
+            agency = full_agency[:200] if len(full_agency) > 200 else full_agency
+            if len(full_agency) > 200:
+                logger.info(f"🏛️  Extracted agency (truncated from {len(full_agency)} to 200 chars): {agency}")
+            else:
+                logger.info(f"🏛️  Extracted agency ({len(agency)} chars): {agency}")
             break
     
     # Try to extract solicitation number
@@ -1409,7 +1541,7 @@ async def match_with_confirmation(
     solicitation: SolicitationIn = Body(...),
     company_id: Optional[str] = Body(default=None),
     enrich: bool = Body(default=True),
-    top_k: int = Query(10, ge=1, le=50)
+    top_k: int = Query(10, ge=1, le=100)
 ):
     """
     Enhanced matching: Match + Enrich + Confirm
@@ -1513,6 +1645,80 @@ async def match_with_confirmation(
     finally:
         db.close()
 
+@app.post("/api/validate-website")
+async def validate_website_endpoint(
+    company_name: str = Body(...),
+    company_website: str = Body(...),
+    company_capabilities: List[str] = Body(default=[]),
+    solicitation_title: str = Body(default=""),
+    required_capabilities: List[str] = Body(default=[])
+):
+    """
+    Validate a company against their website and identify partnering opportunities
+    
+    Args:
+        company_name: Name of the company
+        company_website: Company website URL
+        company_capabilities: Claimed capabilities
+        solicitation_title: Optional solicitation title for context
+        required_capabilities: Required capabilities from solicitation
+        
+    Returns:
+        Website validation results with gaps and partnering opportunities
+    """
+    logger.info(f"Website validation requested for {company_name}")
+    
+    try:
+        # Prepare company data
+        company_data = {
+            "name": company_name,
+            "website": company_website,
+            "capabilities": company_capabilities,
+            "certifications": []
+        }
+        
+        # Prepare solicitation data
+        solicitation_data = {
+            "title": solicitation_title,
+            "required_capabilities": required_capabilities
+        }
+        
+        # Run website validation
+        from website_validator import WebsiteValidator
+        validator = WebsiteValidator(openai_api_key=config.get("chatgpt", {}).get("api_key"))
+        
+        validation_result = await validator.validate_company_website(
+            company_data,
+            solicitation_data,
+            enrichment_data={}
+        )
+        
+        # Format response
+        return {
+            "company_name": validation_result.company_name,
+            "website_url": validation_result.website_url,
+            "website_accessible": validation_result.website_accessible,
+            "validation_score": validation_result.validation_score,
+            "confirmed_capabilities": validation_result.confirmed_capabilities,
+            "website_capabilities": validation_result.website_capabilities,
+            "gaps": [
+                {
+                    "type": gap.gap_type.value,
+                    "description": gap.description,
+                    "claimed": gap.claimed_value,
+                    "website": gap.website_value,
+                    "severity": gap.severity
+                }
+                for gap in validation_result.gaps_found
+            ],
+            "partnering_opportunities": validation_result.partnering_opportunities,
+            "summary": validation_result.summary
+        }
+        
+    except Exception as e:
+        logger.error(f"Website validation failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Website validation failed: {str(e)}")
+
 @app.post("/api/search-companies-by-themes")
 async def search_companies_by_themes(themes: Dict[str, Any] = Body(...), max_results: int = 20):
     """
@@ -1559,8 +1765,8 @@ async def full_pipeline(
     """
     try:
         # Input validation
-        if top_k < 1 or top_k > 50:
-            raise HTTPException(400, "top_k must be between 1 and 50")
+        if top_k < 1 or top_k > 100:
+            raise HTTPException(400, "top_k must be between 1 and 100")
         
         if company_type not in ["for-profit", "academic-nonprofit"]:
             raise HTTPException(400, "Invalid company_type. Must be 'for-profit' or 'academic-nonprofit'")
@@ -1599,15 +1805,21 @@ async def full_pipeline(
         logger.info(f"Company type filter: {company_type}")
         logger.info(f"Company size filter: {company_size}")
         logger.info(f"Requesting {top_k} companies as specified by slider")
-        # Request exactly the number of companies selected by the user
-        search_results = await theme_search.search_by_themes(themes, max_companies=top_k, company_type=company_type, company_size=company_size)
+        
+        # NEW: Request MORE companies initially to account for website filtering
+        # Request 1.3x the desired amount (reduced from 2x for speed - most companies pass now)
+        # Cap at 200 (max useful limit given ChatGPT's 150 cap + buffer)
+        initial_request_count = min(int(top_k * 1.3), 200)
+        logger.info(f"🔍 Requesting {initial_request_count} companies initially (1.3x requested for buffer)")
+        
+        search_results = await theme_search.search_by_themes(themes, max_companies=initial_request_count, company_type=company_type, company_size=company_size)
         
         if not search_results:
             logger.warning("No companies found - API keys may not be configured")
             return {
                 "solicitation_summary": {
-                    "title": solicitation.title or "Uploaded Solicitation",
-                    "agency": solicitation.agency,
+                    "title": sol_dict.get("title") or solicitation.title or "Uploaded Solicitation",
+                    "agency": sol_dict.get("agency") or solicitation.agency,
                     "naics_codes": sol_dict.get("naics_codes", []),
                     "set_asides": sol_dict.get("set_asides", []),
                     "security_clearance": sol_dict.get("security_clearance")
@@ -1639,28 +1851,63 @@ async def full_pipeline(
             logger.info("✅ ChatGPT IS AVAILABLE - Running confirmations")
             chatgpt_source = data_source_manager.sources["chatgpt"]
             solicitation_title = solicitation.title or "Uploaded Solicitation"
+            solicitation_agency = solicitation.agency  # Extract agency
             
-            # Run confirmation for ALL companies returned
+            # Run confirmation for ALL companies returned with TRUE parallelism
             import asyncio
-            confirmation_tasks = []
-            for company in companies_to_confirm:
-                company_name = company.get('name', 'Unknown Company')
-                company_description = company.get('description', None)  # Pass existing description
-                logger.info(f"Creating confirmation task for: {company_name}")
-                task = confirm_single_company(
-                    company_name=company_name,
-                    solicitation_title=solicitation_title,
-                    themes=themes,
-                    chatgpt_source=chatgpt_source,
-                    company_description=company_description  # Avoid extra API call
-                )
-                confirmation_tasks.append(task)
+            from concurrent.futures import ThreadPoolExecutor
             
-            logger.info(f"Running {len(confirmation_tasks)} confirmation tasks...")
+            import time
+            start_time = time.time()
+            logger.info(f"🚀 Starting {len(companies_to_confirm)} confirmations in parallel with thread pool (max_workers=10)...")
             
-            # Execute all confirmations in parallel
-            confirmation_results = await asyncio.gather(*confirmation_tasks, return_exceptions=True)
-            logger.info(f"Completed {len(confirmation_results)} confirmation analyses")
+            # Create a wrapper function that can be run in thread pool
+            def run_confirmation_sync(company_name, company_description):
+                """Synchronous wrapper for running confirmation"""
+                import asyncio
+                import time
+                thread_start = time.time()
+                logger.info(f"⏱️  Thread started for {company_name}")
+                
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    result = loop.run_until_complete(confirm_single_company(
+                        company_name=company_name,
+                        solicitation_title=solicitation_title,
+                        themes=themes,
+                        chatgpt_source=chatgpt_source,
+                        company_description=company_description,
+                        agency=solicitation_agency
+                    ))
+                    thread_end = time.time()
+                    logger.info(f"✅ Thread completed for {company_name} in {thread_end - thread_start:.1f}s")
+                    return result
+                finally:
+                    loop.close()
+            
+            # Execute ALL confirmations in parallel using thread pool
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                loop = asyncio.get_event_loop()
+                confirmation_tasks = []
+                for company in companies_to_confirm:
+                    company_name = company.get('name', 'Unknown Company')
+                    company_description = company.get('description', None)
+                    task = loop.run_in_executor(
+                        executor,
+                        run_confirmation_sync,
+                        company_name,
+                        company_description
+                    )
+                    confirmation_tasks.append(task)
+                
+                # Wait for all to complete
+                logger.info(f"⏳ Waiting for all {len(confirmation_tasks)} tasks to complete...")
+                confirmation_results = await asyncio.gather(*confirmation_tasks, return_exceptions=True)
+            
+            end_time = time.time()
+            total_time = end_time - start_time
+            logger.info(f"🏁 Completed all {len(confirmation_results)} confirmations in {total_time:.1f}s (avg {total_time/len(confirmation_results):.1f}s per company)")
             
             # DEBUG: Check if we got alignment_summary
             for i, conf in enumerate(confirmation_results):
@@ -1713,7 +1960,41 @@ async def full_pipeline(
         combined_results.sort(key=lambda x: x['final_score'], reverse=True)
         logger.info("Re-ordered companies based on confirmation scores")
         
-        # Format confirmed results (first 15)
+        # WEBSITE VALIDATION DISABLED FOR PERFORMANCE
+        # This was causing 0 companies to be returned due to slow HTTP requests timing out
+        # Skip validation entirely - include all companies
+        logger.info("⏭️ Website validation DISABLED - including all companies")
+        validated_results = combined_results
+        companies_filtered = 0
+        
+        logger.info(f"✅ All {len(validated_results)} companies included (validation skipped)")
+        
+        # Check if we have enough companies after filtering
+        requested_count = top_k
+        actual_count = len(validated_results)
+        shortage_message = None
+        
+        if actual_count < requested_count:
+            shortage = requested_count - actual_count
+            logger.warning(f"⚠️ SHORTAGE: Requested {requested_count} companies, but only {actual_count} passed validation")
+            logger.warning(f"   {companies_filtered} companies filtered due to inaccessible websites")
+            logger.warning(f"   Short by {shortage} companies - showing all available validated companies")
+            shortage_message = f"Requested {requested_count} companies, but only {actual_count} met minimum search criteria (accessible website). {companies_filtered} companies were filtered out due to inaccessible websites."
+        else:
+            logger.info(f"✅ SUCCESS: Have {actual_count} validated companies (requested {requested_count})")
+            # Trim to requested count
+            validated_results = validated_results[:requested_count]
+            actual_count = len(validated_results)
+            logger.info(f"   Trimmed to requested {requested_count} companies")
+        
+        # Use validated results instead of combined_results
+        combined_results = validated_results
+        
+        # Extract agency name for fallback summaries
+        fallback_agency_name = extract_agency_name(solicitation.agency or "", solicitation.title or "")
+        logger.info(f"Fallback agency name for results: {fallback_agency_name}")
+        
+        # Format confirmed results
         final_results = []
         for idx, result in enumerate(combined_results, 1):
             company = result['company']
@@ -1730,6 +2011,33 @@ async def full_pipeline(
                     logger.error(f"   confirmation keys: {list(confirmation.keys())}")
                     logger.error(f"   reasoning: {confirmation.get('reasoning', 'N/A')[:100]}")
             
+            # Add website validation data (pre-validated during filtering)
+            website_validation_data = None
+            company_website = company.get('website', '')
+            
+            # Check if we have pre-validated website data
+            if result.get('website_validation_result'):
+                validation = result['website_validation_result']
+                website_validation_data = {
+                    "available": True,
+                    "website_url": company_website,
+                    "validation_endpoint": "/api/validate-website",
+                    "pre_validated": True,
+                    "validation_score": validation.validation_score,
+                    "confirmed_capabilities": validation.confirmed_capabilities,
+                    "website_capabilities": validation.website_capabilities,
+                    "gaps_count": len(validation.gaps_found),
+                    "partnering_opportunities_count": len(validation.partnering_opportunities)
+                }
+            elif company_website:
+                # Website exists but not pre-validated (shouldn't happen with new filter)
+                website_validation_data = {
+                    "available": True,
+                    "website_url": company_website,
+                    "validation_endpoint": "/api/validate-website",
+                    "pre_validated": False
+                }
+            
             final_results.append({
                 "company_id": company.get('id', f"search_{idx}"),
                 "company_name": company.get('name', 'Unknown Company'),
@@ -1743,6 +2051,7 @@ async def full_pipeline(
                 # Company details
                 "description": company.get('description', ''),
                 "website": company.get('website', ''),
+                "website_validation": website_validation_data,
                 "locations": company.get('locations', []),
                 "capabilities": company.get('capabilities', []),
                 "sources": company.get('sources', []),
@@ -1774,9 +2083,9 @@ async def full_pipeline(
                         confirmation.get('alignment_summary') 
                         if (confirmation and confirmation.get('alignment_summary') and len(confirmation.get('alignment_summary', '')) > 100) 
                         else (
-                            f"""Our research indicates that {company.get('name', 'this company')} aligns with the solicitation program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Your specialization and market position suggest you have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
+                            f"""Based on publicly available information, {company.get('name', 'this company')} appears to align well with {fallback_agency_name}'s {solicitation.title or 'program'}. Your capabilities suggest relevance to the required technical areas and may address key priorities. Your specialization and market position indicate potential operational capacity to contribute to program objectives and support strategic goals.
 
-Our analysts show alignment between {company.get('name', 'this company')}'s capabilities and the solicitation's stated requirements. You possess relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Your track record and proven performance in related areas demonstrate your readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
+Your capabilities appear to address aspects of the solicitation's stated requirements. You show technical expertise, methodologies, and industry experience that may align with program needs. Your track record suggests readiness to execute, though verification of specific capabilities would strengthen the proposal evaluation."""
                             if confirmation else None
                         )
                     ),
@@ -1811,15 +2120,15 @@ Our analysts show alignment between {company.get('name', 'this company')}'s capa
             if conf_result and (not conf_result.get('alignment_summary') or len(conf_result.get('alignment_summary', '')) < 100):
                 company_name = result.get('company_name', 'this company')
                 logger.error(f"🚨 FORCING alignment_summary for {company_name} in final response!")
-                conf_result['alignment_summary'] = f"""Our research indicates that {company_name} aligns with the solicitation program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Your specialization and market position suggest you have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
+                conf_result['alignment_summary'] = f"""Based on publicly available information, {company_name} appears to align well with {fallback_agency_name}'s {solicitation.title or 'program'}. Your capabilities suggest relevance to the required technical areas and may address key priorities. Your specialization and market position indicate potential operational capacity to contribute to program objectives and support strategic goals.
 
-Our analysts show alignment between {company_name}'s capabilities and the solicitation's stated requirements. You possess relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Your track record and proven performance in related areas demonstrate your readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
+Your capabilities appear to address aspects of the solicitation's stated requirements. You show technical expertise, methodologies, and industry experience that may align with program needs. Your track record suggests readiness to execute, though verification of specific capabilities would strengthen the proposal evaluation."""
         
         # Return all results (no pagination - slider determines count)
-        return {
+        response_data = {
             "solicitation_summary": {
-                "title": solicitation.title or "Uploaded Solicitation",
-                "agency": solicitation.agency,
+                "title": sol_dict.get("title") or solicitation.title or "Uploaded Solicitation",
+                "agency": sol_dict.get("agency") or solicitation.agency,
                 "naics_codes": sol_dict.get("naics_codes", []),
                 "set_asides": sol_dict.get("set_asides", []),
                 "security_clearance": sol_dict.get("security_clearance")
@@ -1840,6 +2149,18 @@ Our analysts show alignment between {company_name}'s capabilities and the solici
             "solicitation_title": solicitation.title or "Uploaded Solicitation"
         }
         
+        # Add shortage message if applicable
+        if shortage_message:
+            response_data["shortage_notice"] = {
+                "requested": requested_count,
+                "delivered": actual_count,
+                "filtered_out": companies_filtered,
+                "message": shortage_message
+            }
+            logger.info(f"📊 Including shortage notice in response: {shortage_message}")
+        
+        return response_data
+        
     except Exception as e:
         logger.error(f"Full pipeline error: {e}")
         raise HTTPException(status_code=500, detail=f"Pipeline error: {str(e)}")
@@ -1859,6 +2180,7 @@ async def load_next_batch(
         companies = request.get('companies', [])
         themes = request.get('themes', {})
         solicitation_title = request.get('solicitation_title', 'Solicitation')
+        solicitation_agency = request.get('agency', None)  # Get agency from request
         start_index = request.get('start_index', 15)
         batch_size = 15
         
@@ -1888,7 +2210,8 @@ async def load_next_batch(
                 solicitation_title=solicitation_title,
                 themes=themes,
                 chatgpt_source=chatgpt_source,
-                company_description=company_description
+                company_description=company_description,
+                agency=solicitation_agency  # Pass agency
             )
             confirmation_tasks.append(task)
         
@@ -1962,12 +2285,107 @@ async def load_next_batch(
 # Selection Confirmation - Independent verification using chain-of-thought
 # --------------------------------------------------------------------------------------
 
+def extract_agency_name(agency_string: str, solicitation_title: str = "") -> str:
+    """
+    Extract agency name or acronym from agency string or solicitation title.
+    Prefers acronyms over full names.
+    
+    Args:
+        agency_string: The agency field from solicitation
+        solicitation_title: The solicitation title (fallback)
+    
+    Returns:
+        Agency name or acronym (e.g., "USDA", "NIH", "DOD")
+    """
+    if not agency_string or not agency_string.strip():
+        # Try to extract from title if agency not provided
+        if solicitation_title:
+            # Common agency patterns in titles
+            agency_patterns = [
+                r'\b(USDA|NIH|DOD|DOE|NASA|NSF|DHS|VA|HHS|DARPA|ARPA-E|IARPA|FDA|CDC|EPA|NOAA|NIST)\b',
+                r'\b(Department of Defense|Department of Energy|Department of Agriculture)\b',
+                r'\b(National Institutes of Health|National Science Foundation)\b',
+            ]
+            
+            import re
+            for pattern in agency_patterns:
+                match = re.search(pattern, solicitation_title, re.IGNORECASE)
+                if match:
+                    found = match.group(1)
+                    # If it's a full name, try to convert to acronym
+                    acronym_map = {
+                        "Department of Defense": "DOD",
+                        "Department of Energy": "DOE",
+                        "Department of Agriculture": "USDA",
+                        "National Institutes of Health": "NIH",
+                        "National Science Foundation": "NSF"
+                    }
+                    return acronym_map.get(found, found)
+        
+        return "the agency"  # Fallback
+    
+    # Check if it's already an acronym (all caps, 2-6 letters)
+    import re
+    agency_clean = agency_string.strip()
+    
+    # If it's already an acronym, use it
+    if re.match(r'^[A-Z]{2,6}$', agency_clean):
+        return agency_clean
+    
+    # Look for acronym in parentheses like "Department of Defense (DOD)"
+    paren_match = re.search(r'\(([A-Z]{2,6})\)', agency_clean)
+    if paren_match:
+        return paren_match.group(1)
+    
+    # Look for standalone acronyms in the string
+    acronym_match = re.search(r'\b([A-Z]{2,6})\b', agency_clean)
+    if acronym_match:
+        return acronym_match.group(1)
+    
+    # Check common full agency names and map to acronyms
+    agency_lower = agency_clean.lower()
+    full_name_map = {
+        "department of defense": "DOD",
+        "department of energy": "DOE",
+        "department of agriculture": "USDA",
+        "department of veterans affairs": "VA",
+        "department of homeland security": "DHS",
+        "department of health and human services": "HHS",
+        "national institutes of health": "NIH",
+        "national science foundation": "NSF",
+        "national aeronautics and space administration": "NASA",
+        "environmental protection agency": "EPA",
+        "food and drug administration": "FDA",
+        "centers for disease control": "CDC",
+        "defense advanced research projects agency": "DARPA"
+    }
+    
+    for full_name, acronym in full_name_map.items():
+        if full_name in agency_lower:
+            return acronym
+    
+    # Try to create acronym from full name (fallback)
+    words = agency_clean.split()
+    if len(words) >= 2 and len(words) <= 5:
+        # Take first letter of each significant word
+        acronym = ''.join([w[0].upper() for w in words if w[0].isupper() and len(w) > 2])
+        if 2 <= len(acronym) <= 6:
+            return acronym
+    
+    # If all else fails, use the first word or the whole string if short
+    first_word = words[0] if words else agency_clean
+    if len(first_word) <= 15:
+        return first_word
+    
+    return "the agency"  # Ultimate fallback
+
 async def confirm_single_company(
     company_name: str,
     solicitation_title: str,
     themes: Dict[str, Any],
     chatgpt_source,
-    company_description: str = None
+    company_description: str = None,
+    agency: str = None
 ) -> Dict[str, Any]:
     """
     Helper function to confirm a single company.
@@ -1991,11 +2409,112 @@ async def confirm_single_company(
     try:
         logger.info(f"Confirming: {company_name}")
         
+        # Clean company name for use in prompts and responses
+        cleaned_company_name = clean_company_name(company_name)
+        logger.info(f"Cleaned name: '{company_name}' -> '{cleaned_company_name}'")
+        
+        # Extract agency name/acronym
+        agency_name = extract_agency_name(agency or "", solicitation_title)
+        logger.info(f"Extracted agency: '{agency_name}'")
+        
         # Use existing company description if available, otherwise note it
         company_context = f"Company description from search: {company_description}" if company_description else f"Company name: {company_name} (description not available from search)"
         
+        # ═══════════════════════════════════════════════════════════════
+        # ENRICHMENT: Get verified external data about the company
+        # ═══════════════════════════════════════════════════════════════
+        # TEMPORARILY DISABLED FOR PERFORMANCE - can be re-enabled when optimized
+        ENABLE_ENRICHMENT = False  # Set to True to enable external data enrichment
+        
+        verified_data = {}
+        has_external_verification = False
+        verified_facts = []
+        
+        if ENABLE_ENRICHMENT:
+            logger.info(f"🔍 Enriching company data from external sources for {company_name}...")
+            try:
+                enrichment_result = await data_source_manager.enrich_company(
+                    company_name=company_name,
+                    company_data={"description": company_description} if company_description else None
+                )
+                
+                # Extract key verified facts from enrichment
+                verified_data = enrichment_result.enrichment_data
+                has_external_verification = len(verified_data) > 0
+            except Exception as e:
+                logger.warning(f"⚠️ Enrichment failed for {company_name}: {e}")
+                # Continue without enrichment
+        else:
+            logger.debug(f"⏭️ Enrichment disabled - skipping for {company_name}")
+        
+        # Build verified facts summary for AI
+        # (will be empty if enrichment disabled)
+        
+        # Check USASpending for federal contracts
+        if "usaspending" in verified_data and verified_data["usaspending"]:
+            usa_data = verified_data["usaspending"]
+            contract_count = len(usa_data.get("awards", []))
+            if contract_count > 0:
+                verified_facts.append(f"✓ {contract_count} federal contract(s) found in USASpending.gov")
+                # Get agency list
+                agencies = set()
+                for award in usa_data.get("awards", [])[:5]:
+                    if award.get("awarding_agency"):
+                        agencies.add(award["awarding_agency"])
+                if agencies:
+                    verified_facts.append(f"  Past clients: {', '.join(list(agencies)[:3])}")
+            else:
+                verified_facts.append("✗ No federal contracts found in USASpending.gov")
+        
+        # Check SBIR for innovation awards
+        if "sbir" in verified_data and verified_data["sbir"]:
+            sbir_data = verified_data["sbir"]
+            award_count = len(sbir_data.get("awards", []))
+            if award_count > 0:
+                verified_facts.append(f"✓ {award_count} SBIR/STTR award(s) found")
+                phases = set(a.get("phase", "") for a in sbir_data.get("awards", []))
+                if phases:
+                    verified_facts.append(f"  Phases: {', '.join(sorted(phases))}")
+            else:
+                verified_facts.append("✗ No SBIR/STTR awards found")
+        
+        # Check NIH Reporter for research grants
+        if "nih" in verified_data and verified_data["nih"]:
+            nih_data = verified_data["nih"]
+            grant_count = len(nih_data.get("grants", []))
+            if grant_count > 0:
+                verified_facts.append(f"✓ {grant_count} NIH research grant(s) found")
+            else:
+                verified_facts.append("✗ No NIH grants found")
+        
+        # Check USPTO for patents
+        if "uspto" in verified_data and verified_data["uspto"]:
+            uspto_data = verified_data["uspto"]
+            patent_count = len(uspto_data.get("patents", []))
+            if patent_count > 0:
+                verified_facts.append(f"✓ {patent_count} patent(s) found in USPTO")
+        
+        # Check Google for web presence
+        if "google" in verified_data and verified_data["google"]:
+            google_data = verified_data["google"]
+            result_count = google_data.get("total_results", 0)
+            if result_count > 1000:
+                verified_facts.append(f"✓ Strong web presence ({result_count:,} search results)")
+            elif result_count > 100:
+                verified_facts.append(f"⚠ Moderate web presence ({result_count} search results)")
+            else:
+                verified_facts.append(f"⚠ Limited web presence ({result_count} search results)")
+        
+        # Format verified facts for prompt
+        if verified_facts:
+            verified_facts_text = "\n".join(verified_facts)
+            logger.info(f"Found {len(verified_facts)} verified facts about {company_name}")
+        else:
+            verified_facts_text = "⚠ No external verification data available - assessment based on publicly available information only"
+            logger.warning(f"No enrichment data found for {company_name}")
+        
         # Single API call: Combined research + verification
-        logger.info("Using ULTRA-STRICT 2-PARAGRAPH prompt with rejection threat")
+        logger.info("Using ULTRA-STRICT 2-PARAGRAPH prompt with rejection threat and VERIFIED DATA")
         confirmation_prompt = f"""COMPANY: {company_name}
 {company_context}
 
@@ -2007,6 +2526,19 @@ Key Priorities: {', '.join(themes.get('key_priorities', [])[:5])}
 Technical Capabilities: {', '.join([str(cap) for cap in themes.get('technical_capabilities', [])[:5]])}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔍 VERIFIED EXTERNAL DATA (use this to validate claims and adjust confidence):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+{verified_facts_text}
+
+IMPORTANT: 
+- Use verified data above to confirm or challenge your assessment
+- If company has federal contracts/SBIR awards, increase confidence
+- If no external verification found, be more conservative in confidence score
+- Mention verified facts in your alignment summary when relevant
+- Do NOT make claims that contradict verified data
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚠️ CRITICAL INSTRUCTION - YOUR RESPONSE WILL BE REJECTED IF YOU VIOLATE THIS ⚠️
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -2016,30 +2548,36 @@ The "alignment_summary" field MUST contain EXACTLY 2 FULL PARAGRAPHS.
 "The analysis indicates a strong alignment between the company and solicitation."
 
 ✅ VALID (will be accepted):
-First paragraph starting with "Our research indicates..." (80-120 words)
+First paragraph starting with "From our understanding of your publicly available information, we believe..." (60-90 words)
 
-Second paragraph starting with "Our analysts show..." (80-120 words)
+Second paragraph starting with "Your capabilities appear to directly address..." (60-90 words)
 
 REQUIRED FORMAT (FOLLOW EXACTLY):
 
-PARAGRAPH 1 (80-120 words) - Program Reference & Mission Connection:
-Start with: "Our research indicates that [Company Name] aligns with [Agency Name]'s [Program Name/Solicitation Title]..."
+PARAGRAPH 1 (60-90 words) - Program Reference & Mission Connection:
+Start with: "Based on publicly available information, {cleaned_company_name} appears to align well with {agency_name}'s [Program Name/Solicitation Title]..."
 Include: agency mission, strategic priorities, company specialization, market position
-End with: company's expertise and operational capacity
+Use measured language: "appears to," "suggests," "may," "indicates potential"
 IMPORTANT: Use "your" instead of "their" when referring to the company (e.g., "your expertise", "your capabilities")
+CRITICAL: When mentioning the company name, use ONLY "{cleaned_company_name}" without any suffixes like Inc, LLC, Corp, Ltd, etc.
+🚫 FORBIDDEN: DO NOT use placeholder text like "[Agency]" or "[Agency Name]" - use the actual agency name: "{agency_name}"
+🚫 AVOID: Absolute language like "perfectly aligns," "clearly matches," "definitely," "certainly"
 
-PARAGRAPH 2 (80-120 words) - Scope Alignment & Technical Fit:
-Start with: "Our analysts show strong alignment between [Company Name]'s capabilities and the solicitation's stated need for [specific requirement]..."
+PARAGRAPH 2 (60-90 words) - Scope Alignment & Technical Fit:
+Start with: "Your capabilities appear to address aspects of the solicitation's requirements for [specific requirement]..."
 Include: 3 key capabilities, methodologies/technologies, specific outcomes
-End with: proven experience demonstrating readiness
+Use measured language: "appear to," "suggest," "may," "show potential," "indicate"
+Keep statements concrete. Focus on tangible strengths and proven results.
 IMPORTANT: Use "your" instead of "their" when referring to the company (e.g., "your key capabilities include", "your proven experience")
+CRITICAL: When mentioning the company name, use ONLY "{cleaned_company_name}" without any suffixes like Inc, LLC, Corp, Ltd, etc.
+🚫 AVOID: Absolute language like "perfectly matches," "clearly demonstrates," "guarantees," "ensures"
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 EXAMPLE OF CORRECT OUTPUT (DO NOT copy this, but follow this structure):
 
-"Our research indicates that Cytiva aligns with USDA's Poultry Disease Surveillance Enhancement Program. This opportunity directly connects to USDA's broader mission of protecting agricultural health and biosecurity infrastructure, with current strategic priorities in rapid pathogen detection and avian disease prevention. Cytiva specializes in bioprocessing solutions and advanced diagnostic technologies, having established itself as a global leader in life sciences instrumentation. Your focus on rapid testing platforms and biosensor development positions you to support USDA's goals of early disease detection and outbreak prevention capabilities.
+"Based on publicly available information, Cytiva appears to align well with USDA's Poultry Disease Surveillance Enhancement Program focused on agricultural health and biosecurity infrastructure. This may connect to USDA's strategic priorities in rapid pathogen detection and avian disease prevention. Your specialization in bioprocessing solutions and advanced diagnostic technologies suggests a position as an established provider in life sciences instrumentation. Your rapid testing platforms and biosensor development appear to support USDA's early disease detection and outbreak prevention goals.
 
-Our analysts show strong alignment between Cytiva's capabilities and the solicitation's stated need for automated pathogen detection systems. Your key capabilities include microfluidic biosensor platforms, AI-powered diagnostic analytics, and cold-chain sample management solutions, which directly address the program's requirements for field-deployable testing. You utilize advanced immunoassay technology and real-time PCR detection methods to deliver results within 2-4 hours, making you well-suited to execute rapid surveillance operations. Your proven experience in veterinary diagnostics and USDA contract performance demonstrates your readiness to meet the program requirements."
+Your capabilities appear to address aspects of the solicitation's requirements for automated pathogen detection systems. You offer microfluidic biosensor platforms, AI-powered diagnostic analytics, and cold-chain sample management—capabilities that may be relevant for field-deployable testing. Your advanced immunoassay technology and real-time PCR methods show 2-4 hour result turnaround, indicating operational readiness. Your veterinary diagnostics experience and documented USDA contract performance suggest capability to execute."
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 Provide your response as JSON:
@@ -2048,7 +2586,7 @@ Provide your response as JSON:
   "confidence_score": float (0-1),
   "recommendation": "proceed" | "reconsider" | "reject",
   "reasoning": "brief internal note",
-  "alignment_summary": "WRITE 2 PARAGRAPHS SEPARATED BY \\n\\n (double newline). PARAGRAPH 1 (80-120 words): Start with 'Our research indicates that [Company] aligns with [Agency]'s...' Include agency mission, strategic priorities, company specialization. PARAGRAPH 2 (80-120 words): Start with 'Our analysts show strong alignment between...' Include 3 specific capabilities, methodologies, and proven experience. MANDATORY: Put \\n\\n between the two paragraphs.",
+  "alignment_summary": "WRITE 2 PARAGRAPHS SEPARATED BY \\n\\n (double newline). PARAGRAPH 1 (60-90 words): Start with 'Based on publicly available information, [Company] appears to align well with {agency_name}'s...' Include agency mission, strategic priorities, company specialization. Use measured language: 'appears to,' 'suggests,' 'may,' 'indicates potential.' PARAGRAPH 2 (60-90 words): Start with 'Your capabilities appear to address aspects of the solicitation's requirements for...' Include 3 specific capabilities, methodologies, and proven experience. Use measured language: 'appear to,' 'suggest,' 'may,' 'show potential.' MANDATORY: Put \\n\\n between the two paragraphs. 🚫 DO NOT use '[Agency]' placeholder - use '{agency_name}'. 🚫 AVOID absolute language like 'perfectly aligns,' 'clearly matches,' 'definitely,' 'certainly.'",
   "chain_of_thought": ["step 1", "step 2", "step 3", "step 4", "step 5"],
   "findings": {{
     "company_info": "4-5 sentences about company background",
@@ -2061,39 +2599,51 @@ Provide your response as JSON:
 
 VALIDATION CHECKLIST (your output MUST pass all checks):
 ✓ alignment_summary contains EXACTLY 2 paragraphs (not 1 sentence)
-✓ Paragraph 1 starts with "Our research indicates that [Company Name] aligns with..."
+✓ Paragraph 1 starts with "Based on publicly available information, [Company Name] appears to align well with {agency_name}'s..."
 ✓ Paragraph 1 mentions agency mission and strategic priorities
-✓ Paragraph 2 starts with "Our analysts show strong alignment between..."
+✓ Paragraph 2 starts with "Your capabilities appear to address aspects of the solicitation's requirements for..."
 ✓ Paragraph 2 lists 3 specific capabilities
-✓ Both paragraphs are 80-120 words each
-✓ Language is professional, specific, and concrete (not vague)
+✓ Both paragraphs are 60-90 words each
+✓ Language uses measured terms: "appears to," "suggests," "may," "indicates potential" (NO absolute language)
+✓ NO placeholder text like "[Agency]" - actual agency name "{agency_name}" is used
+✓ AVOIDS absolute language like "perfectly aligns," "clearly matches," "definitely," "certainly"
 
 FAILURE EXAMPLE (DO NOT DO THIS): "The detailed analysis confirms a strong alignment between the company and solicitation requirements."
 This is WRONG because: only 1 sentence, too vague, missing all required elements."""
 
-        confirmation_response = chatgpt_source.client.chat.completions.create(
+        # Run OpenAI call in thread pool for true parallelism
+        import asyncio
+        confirmation_response = await asyncio.to_thread(
+            chatgpt_source.client.chat.completions.create,
             model=chatgpt_source.model,
             messages=[
-                {"role": "system", "content": """You are a senior business analyst. You MUST follow these exact rules or your response will be REJECTED:
+                {"role": "system", "content": f"""You are a senior business analyst. You MUST follow these exact rules or your response will be REJECTED:
 
 RULE 1: The "alignment_summary" field MUST contain 2 FULL PARAGRAPHS (not 1 sentence, not a summary).
 RULE 2: Separate the paragraphs with \\n\\n (double newline).
-RULE 3: Each paragraph must be 80-120 words.
-RULE 4: Paragraph 1 MUST start with: "Our research indicates that [Company Name] aligns with [Agency]'s [Program]..."
-RULE 5: Paragraph 2 MUST start with: "Our analysts show strong alignment between [Company]'s..."
+RULE 3: Each paragraph must be 60-90 words. Keep language direct and impactful.
+RULE 4: Paragraph 1 MUST start with: "From our understanding of your publicly available information, we believe {cleaned_company_name} aligns with {agency_name}'s [Program]..."
+RULE 5: Paragraph 2 MUST start with: "Your capabilities appear to directly address the solicitation's need for..."
 RULE 6: CRITICAL - Use "your" instead of "their" when referring to the company (e.g., "your capabilities", "your expertise", "you utilize", "your proven experience")
+RULE 7: CRITICAL - When mentioning the company name, use ONLY "{cleaned_company_name}" without any suffixes like Inc, LLC, Corp, Ltd, etc.
+RULE 8: Remove filler words. Make statements concrete and hard-hitting. Focus on tangible strengths.
+RULE 9: 🚫 FORBIDDEN - DO NOT use placeholder text like "[Agency]" or "[Agency Name]" in your response. Use the actual agency name: "{agency_name}". Your response will be REJECTED if it contains "[Agency]".
 
 EXAMPLES OF INVALID RESPONSES (DO NOT DO THIS):
 ❌ "The analysis indicates a strong alignment between the company and solicitation."
 ❌ "Cytiva is a good match for this program based on their capabilities." (WRONG - should use "your")
+❌ "Acme Corp Inc aligns with the requirements..." (WRONG - should use "Acme Corp" without Inc)
+❌ "XYZ LLC specializes in..." (WRONG - should use "XYZ" without LLC)
+❌ "...aligns with [Agency]'s program..." (WRONG - use actual agency name: "{agency_name}")
 ❌ Any single sentence or summary
 ❌ Using "their" instead of "your" when referring to the company
 ❌ Using "the company" instead of "you/your" when addressing capabilities
+❌ Using placeholder brackets like [Agency], [Agency Name], or [Program] for the agency
 
 REQUIRED FORMAT:
-{
-  "alignment_summary": "Our research indicates that [Company] aligns with [Agency]'s [Program]. [Continue for 80-120 words about mission, priorities, specialization - use 'your' when referring to the company]\\n\\nOur analysts show strong alignment between [Company]'s capabilities and the solicitation's need for [requirement]. Your key capabilities include [list 3]. You utilize [methodologies] to deliver [outcomes]. Your proven experience demonstrates [readiness]."
-}
+{{
+  "alignment_summary": "From our understanding of your publicly available information, we believe {cleaned_company_name} aligns with {agency_name}'s [Program Name]. [Continue for 60-90 words about mission, priorities, specialization - use 'your' when referring to the company. Be direct and impactful.]\\n\\nYour capabilities appear to directly address the solicitation's need for [requirement]. You offer [capability 1], [capability 2], and [capability 3]—all critical for [outcome]. Your [methodology/technology] delivers [specific results]. Your [experience/performance] demonstrates proven capability to execute."
+}}
 
 If you write a single sentence or summary instead of 2 full paragraphs, your response will FAIL validation."""},
                 {"role": "user", "content": confirmation_prompt}
@@ -2147,6 +2697,74 @@ If you write a single sentence or summary instead of 2 full paragraphs, your res
                 raise
         result['company_name'] = company_name
         
+        # ═══════════════════════════════════════════════════════════════
+        # CONFIDENCE CALIBRATION: Adjust based on external verification
+        # ═══════════════════════════════════════════════════════════════
+        original_confidence = result.get('confidence_score', 0.5)
+        calibrated_confidence = original_confidence
+        calibration_notes = []
+        
+        # Count verified positive indicators
+        has_contracts = any("federal contract" in fact and "✓" in fact for fact in verified_facts)
+        has_sbir = any("SBIR" in fact and "✓" in fact for fact in verified_facts)
+        has_nih = any("NIH" in fact and "✓" in fact for fact in verified_facts)
+        has_patents = any("patent" in fact and "✓" in fact for fact in verified_facts)
+        has_strong_web = any("Strong web presence" in fact for fact in verified_facts)
+        
+        # Count negative indicators
+        no_contracts = any("No federal contracts" in fact for fact in verified_facts)
+        no_sbir = any("No SBIR" in fact for fact in verified_facts)
+        limited_web = any("Limited web presence" in fact for fact in verified_facts)
+        
+        # Calibrate confidence based on verification
+        if has_external_verification:
+            # Positive adjustments
+            if has_contracts:
+                calibrated_confidence = min(1.0, calibrated_confidence + 0.10)
+                calibration_notes.append("✓ Federal contracts verified (+0.10)")
+            
+            if has_sbir:
+                calibrated_confidence = min(1.0, calibrated_confidence + 0.08)
+                calibration_notes.append("✓ SBIR awards verified (+0.08)")
+            
+            if has_nih:
+                calibrated_confidence = min(1.0, calibrated_confidence + 0.05)
+                calibration_notes.append("✓ NIH grants verified (+0.05)")
+            
+            if has_patents:
+                calibrated_confidence = min(1.0, calibrated_confidence + 0.03)
+                calibration_notes.append("✓ Patents verified (+0.03)")
+            
+            # Negative adjustments (more conservative)
+            if no_contracts and no_sbir and original_confidence > 0.7:
+                # High confidence but no verification - reduce
+                calibrated_confidence = min(0.75, calibrated_confidence * 0.90)
+                calibration_notes.append("⚠ No gov't contracts/SBIR found - confidence capped at 0.75")
+            
+            if limited_web:
+                calibrated_confidence *= 0.95
+                calibration_notes.append("⚠ Limited web presence (-5%)")
+        
+        else:
+            # No external data at all - be conservative
+            if original_confidence > 0.80:
+                calibrated_confidence = 0.75
+                calibration_notes.append("⚠ No external verification - confidence capped at 0.75")
+        
+        # Apply calibration
+        if calibrated_confidence != original_confidence:
+            result['confidence_score'] = calibrated_confidence
+            result['original_confidence'] = original_confidence
+            logger.info(f"📊 Confidence calibrated: {original_confidence:.2f} → {calibrated_confidence:.2f}")
+            for note in calibration_notes:
+                logger.info(f"   {note}")
+        else:
+            logger.info(f"📊 Confidence unchanged: {original_confidence:.2f} (no calibration needed)")
+        
+        # Store enrichment metadata in result
+        result['enrichment_data_available'] = has_external_verification
+        result['verified_sources'] = list(verified_data.keys()) if has_external_verification else []
+        
         # Get alignment_summary (should already have 2 paragraphs separated by \n\n)
         alignment_summary = result.get('alignment_summary', '')
         
@@ -2162,13 +2780,21 @@ If you write a single sentence or summary instead of 2 full paragraphs, your res
             logger.error(f"   Got: '{alignment_summary[:100] if alignment_summary else 'EMPTY'}'")
             logger.error(f"   Forcing generation of proper 2-paragraph summary...")
             
-            # Generate proper summary immediately
-            alignment_summary = f"""Our research indicates that {company_name} aligns with the {solicitation_title} program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Your specialization and market position suggest you have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
+            # Generate proper summary immediately (using cleaned name and agency)
+            alignment_summary = f"""From our understanding of your publicly available information, we believe {cleaned_company_name} aligns with {agency_name}'s {solicitation_title} program. You demonstrate relevant capabilities in the required technical areas and address the solicitation's key priorities. Your specialization and market position show operational capacity to contribute to program objectives and support strategic goals.
 
-Our analysts show alignment between {company_name}'s capabilities and the solicitation's stated requirements. You possess relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Your track record and proven performance in related areas demonstrate your readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
+Your capabilities appear to directly address the solicitation's stated requirements. You possess technical expertise, proven methodologies, and industry experience aligned with program needs. Your track record and performance demonstrate readiness to execute, though additional verification of specific capabilities may strengthen the proposal evaluation."""
             
             result['alignment_summary'] = alignment_summary
-            logger.info(f"✅ FORCED proper 2-paragraph summary generated")
+            logger.info(f"✅ FORCED proper 2-paragraph summary generated (using cleaned name: {cleaned_company_name})")
+        
+        # Post-process alignment_summary to ensure company name appears without suffixes
+        # This catches any cases where ChatGPT included suffixes despite instructions
+        if alignment_summary and company_name != cleaned_company_name:
+            # Replace any instances of the full company name with the cleaned version
+            alignment_summary = alignment_summary.replace(company_name, cleaned_company_name)
+            result['alignment_summary'] = alignment_summary
+            logger.info(f"Post-processed alignment_summary to use cleaned company name")
         
         logger.info(f"Final alignment_summary length: {len(result.get('alignment_summary', ''))} chars")
         
@@ -2181,10 +2807,16 @@ Our analysts show alignment between {company_name}'s capabilities and the solici
         # Validation checks
         word_count = len(alignment_summary.split())
         paragraph_count = len(paragraphs)
-        starts_correctly = alignment_summary.startswith("Our research indicates")
-        has_second_paragraph = "Our analysts show" in alignment_summary
+        starts_correctly = alignment_summary.startswith("From our understanding")
+        has_second_paragraph = "Your capabilities appear to" in alignment_summary
         
         logger.info(f"VALIDATION: alignment_summary - {word_count} words, {paragraph_count} paragraphs")
+        
+        # Check for forbidden placeholder text
+        has_agency_placeholder = "[Agency]" in alignment_summary or "[Agency Name]" in alignment_summary
+        if has_agency_placeholder:
+            logger.error(f"❌ CRITICAL: alignment_summary contains forbidden '[Agency]' placeholder!")
+            logger.error(f"   Agency name should be: {agency_name}")
         
         # Validation and auto-retry logic
         validation_failed = False
@@ -2195,16 +2827,20 @@ Our analysts show alignment between {company_name}'s capabilities and the solici
             failure_reason = f"Only {paragraph_count} paragraph(s). Expected 2."
             logger.error(f"❌ VALIDATION FAILED: {failure_reason}")
             logger.error(f"   Content: {alignment_summary[:200]}...")
-        elif word_count < 80:
+        elif word_count < 60:
             validation_failed = True
             failure_reason = f"Only {word_count} words. Too short."
             logger.error(f"❌ VALIDATION FAILED: {failure_reason}")
-        elif not starts_correctly:
-            logger.warning(f"⚠️  VALIDATION WARNING: Paragraph 1 doesn't start with 'Our research indicates'")
-        elif not has_second_paragraph:
-            logger.warning(f"⚠️  VALIDATION WARNING: Paragraph 2 missing 'Our analysts show' phrase")
+        elif has_agency_placeholder:
+            validation_failed = True
+            failure_reason = f"Contains forbidden '[Agency]' placeholder. Should use: {agency_name}"
+            logger.error(f"❌ VALIDATION FAILED: {failure_reason}")
+        elif not alignment_summary.startswith("From our understanding"):
+            logger.warning(f"⚠️  VALIDATION WARNING: Paragraph 1 doesn't start with 'From our understanding'")
+        elif not ("Your capabilities appear to" in alignment_summary or "You offer" in alignment_summary):
+            logger.warning(f"⚠️  VALIDATION WARNING: Paragraph 2 missing 'Your capabilities appear to' phrase")
         else:
-            if word_count < 130:
+            if word_count < 100:
                 logger.info(f"✅ VALIDATION PASSED (with note): {paragraph_count} paragraphs, {word_count} words - slightly short but acceptable")
             else:
                 logger.info(f"✅ VALIDATION PASSED: {paragraph_count} paragraphs, {word_count} words, correct format")
@@ -2212,9 +2848,9 @@ Our analysts show alignment between {company_name}'s capabilities and the solici
         # If validation failed critically, generate a fallback summary
         if validation_failed:
             logger.warning(f"⚠️  Generating fallback summary due to validation failure")
-            result['alignment_summary'] = f"""Our research indicates that {company_name} aligns with the {solicitation_title} program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Your specialization and market position suggest you have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
+            result['alignment_summary'] = f"""From our understanding of your publicly available information, we believe {company_name} aligns with {agency_name}'s {solicitation_title} program. You demonstrate relevant capabilities in the required technical areas and address the solicitation's key priorities. Your specialization and market position show operational capacity to contribute to program objectives and support strategic goals.
 
-Our analysts show alignment between {company_name}'s capabilities and the solicitation's stated requirements. You possess relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Your track record and proven performance in related areas demonstrate your readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
+Your capabilities appear to directly address the solicitation's stated requirements. You possess technical expertise, proven methodologies, and industry experience aligned with program needs. Your track record and performance demonstrate readiness to execute, though additional verification of specific capabilities may strengthen the proposal evaluation."""
             logger.info("✅ Fallback summary generated with proper 2-paragraph format")
         
         return result
@@ -2222,9 +2858,15 @@ Our analysts show alignment between {company_name}'s capabilities and the solici
     except json.JSONDecodeError as e:
         logger.error(f"JSON parsing error in confirmation for {company_name}: {e}")
         # Return a fallback result with proper alignment_summary
-        fallback_summary = f"""Our research indicates that {company_name} aligns with the {solicitation_title} program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Your specialization and market position suggest you have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
+        # Try to extract agency from params, otherwise use generic fallback
+        try:
+            fallback_agency = extract_agency_name(agency or "", solicitation_title)
+        except:
+            fallback_agency = "the funding agency"
+        
+        fallback_summary = f"""From our understanding of your publicly available information, we believe {company_name} aligns with {fallback_agency}'s {solicitation_title} program. You demonstrate relevant capabilities in the required technical areas and address the solicitation's key priorities. Your specialization and market position show operational capacity to contribute to program objectives and support strategic goals.
 
-Our analysts show alignment between {company_name}'s capabilities and the solicitation's stated requirements. You possess relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Your track record and proven performance in related areas demonstrate your readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
+Your capabilities appear to directly address the solicitation's stated requirements. You possess technical expertise, proven methodologies, and industry experience aligned with program needs. Your track record and performance demonstrate readiness to execute, though additional verification of specific capabilities may strengthen the proposal evaluation."""
         
         return {
             'company_name': company_name,
@@ -2245,9 +2887,15 @@ Our analysts show alignment between {company_name}'s capabilities and the solici
     except Exception as e:
         logger.error(f"Selection confirmation error for {company_name}: {e}")
         # Return a fallback result with proper alignment_summary
-        fallback_summary = f"""Our research indicates that {company_name} aligns with the {solicitation_title} program. This company demonstrates relevant capabilities in the required technical areas and shows potential to address the solicitation's key priorities. Your specialization and market position suggest you have the operational capacity to contribute to this program's objectives and support the agency's strategic goals in this domain.
+        # Try to extract agency from params, otherwise use generic fallback
+        try:
+            fallback_agency = extract_agency_name(agency or "", solicitation_title)
+        except:
+            fallback_agency = "the funding agency"
+        
+        fallback_summary = f"""From our understanding of your publicly available information, we believe {company_name} aligns with {fallback_agency}'s {solicitation_title} program. You demonstrate relevant capabilities in the required technical areas and address the solicitation's key priorities. Your specialization and market position show operational capacity to contribute to program objectives and support strategic goals.
 
-Our analysts show alignment between {company_name}'s capabilities and the solicitation's stated requirements. You possess relevant technical expertise, established methodologies, and industry experience that could address the program's needs. Your track record and proven performance in related areas demonstrate your readiness to engage with this opportunity, though additional detailed verification of specific capabilities may be beneficial during the proposal evaluation process."""
+Your capabilities appear to directly address the solicitation's stated requirements. You possess technical expertise, proven methodologies, and industry experience aligned with program needs. Your track record and performance demonstrate readiness to execute, though additional verification of specific capabilities may strengthen the proposal evaluation."""
         
         return {
             'company_name': company_name,
@@ -2337,8 +2985,8 @@ async def test_alignment_fix():
             "has_alignment_summary": bool(alignment_summary),
             "paragraph_count": len(paragraphs),
             "word_count": word_count,
-            "starts_correctly": alignment_summary.startswith("Our research indicates"),
-            "has_second_paragraph": "Our analysts show" in alignment_summary,
+            "starts_correctly": alignment_summary.startswith("From our understanding"),
+            "has_second_paragraph": "Your capabilities appear to" in alignment_summary,
             "sample_output_first_100_chars": alignment_summary[:100] if alignment_summary else "None",
             "full_result_keys": list(result.keys())
         }

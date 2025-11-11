@@ -13,7 +13,7 @@ function App() {
                 n of 1
               </h1>
               <span className="ml-3 px-2 py-1 text-xs font-semibold text-blue-600 bg-blue-100 rounded-full">
-                v3.0
+                v0.5
               </span>
             </div>
           </div>

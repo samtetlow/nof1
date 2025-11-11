@@ -192,7 +192,12 @@ class ChatGPTSource:
                 return []
             
             themes = filters.get('themes', {})
-            max_companies = max(1, min(filters.get('max_companies', 10), 50)) if filters else 10  # Clamp between 1-50
+            requested_companies = filters.get('max_companies', 10) if filters else 10
+            # GPT-4o-mini supports 16K tokens output - can handle 80+ companies
+            # Cap at 150 for practical reasons (quality over quantity)
+            max_companies = max(1, min(requested_companies, 150))
+            if requested_companies > 150:
+                logger.warning(f"Requested {requested_companies} companies, but capped at 150 for quality")
             company_type = filters.get('company_type', 'for-profit') if filters else 'for-profit'
             company_size = filters.get('company_size', 'all') if filters else 'all'
             
@@ -220,6 +225,8 @@ class ChatGPTSource:
                 size_requirement = "\n\n**CRITICAL SIZE REQUIREMENT: ONLY suggest companies with 500 EMPLOYEES OR FEWER. This is a strict requirement - companies must be small businesses (≤500 employees). Include small business certified companies, SBA 8(a), woman-owned, veteran-owned, or other qualifying small contractors. Absolutely DO NOT include any large corporations, Fortune 500 companies, or firms with more than 500 employees.**"
             elif company_size == "large":
                 size_requirement = "\n\n**CRITICAL SIZE REQUIREMENT: ONLY suggest companies with MORE THAN 500 EMPLOYEES. This is a strict requirement - companies must be large businesses (>500 employees). Include Fortune 500, major corporations, large established firms. Absolutely DO NOT include small businesses, startups, or firms with 500 or fewer employees.**"
+            else:  # company_size == "all"
+                size_requirement = "\n\n**SIZE REQUIREMENT: Include companies of ALL SIZES - both small businesses (≤500 employees) AND large corporations (>500 employees). Provide a diverse mix of company sizes in your suggestions.**"
             
             prompt = f"""You are helping identify companies for a government solicitation. Be VERY SPECIFIC and match companies to the exact domain and requirements below.
 
@@ -249,13 +256,21 @@ For each company, provide:
 Return ONLY a JSON array with fields: name, description, match_reason, website, capabilities
 DO NOT include any markdown formatting or code blocks, just the raw JSON array."""
             
+            # Calculate max_tokens based on requested companies
+            # Rough estimate: ~200 tokens per company entry (name, description, match_reason, website, capabilities)
+            # Add 500 buffer for JSON structure
+            estimated_tokens = (max_companies * 200) + 500
+            # Cap at 16000 (GPT-4o-mini supports 16K output tokens)
+            max_tokens_needed = min(estimated_tokens, 16000)
+            logger.info(f"Using max_tokens={max_tokens_needed} for {max_companies} companies (GPT-4o-mini)")
+            
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
                     {"role": "system", "content": "You are an expert at identifying companies for government contracts. You have deep knowledge of companies across all industries including healthcare, biotech, agriculture, cybersecurity, manufacturing, energy, and more. Be specific and match companies to the exact domain requirements."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=4000,  # Increased to reliably handle up to 20 companies with full details
+                max_tokens=max_tokens_needed,
                 temperature=0.7
             )
             
@@ -280,15 +295,39 @@ DO NOT include any markdown formatting or code blocks, just the raw JSON array."
             except json.JSONDecodeError as e:
                 logger.error(f"ChatGPT JSON parsing error: {e}")
                 logger.error(f"Content preview: {content[:300]}...")
-                # Try to extract JSON from text if it's embedded
+                
+                # Try multiple recovery strategies
+                # Strategy 1: Extract JSON array
                 json_match = re.search(r'\[.*\]', content, re.DOTALL)
                 if json_match:
                     try:
                         companies = json.loads(json_match.group(0))
-                        logger.info("Successfully extracted JSON from response")
+                        logger.info("✓ Successfully extracted JSON from response")
                     except Exception as ex:
-                        logger.error(f"Failed to extract JSON: {ex}")
-                        return []
+                        logger.warning(f"Strategy 1 failed: {ex}")
+                        # Strategy 2: Fix common JSON errors (trailing commas, incomplete objects)
+                        try:
+                            fixed_content = json_match.group(0)
+                            # Remove trailing commas before ] or }
+                            fixed_content = re.sub(r',\s*([}\]])', r'\1', fixed_content)
+                            # Try to find where JSON is incomplete and truncate
+                            # Count open vs closed braces
+                            open_count = fixed_content.count('{')
+                            close_count = fixed_content.count('}')
+                            if open_count > close_count:
+                                # JSON is incomplete - try to close it
+                                logger.info(f"JSON incomplete: {open_count} open braces, {close_count} close braces")
+                                # Find the last complete object
+                                last_complete = fixed_content.rfind('},')
+                                if last_complete > 0:
+                                    fixed_content = fixed_content[:last_complete+1] + '\n]'
+                                    logger.info("✓ Truncated to last complete object")
+                            
+                            companies = json.loads(fixed_content)
+                            logger.info(f"✓ Successfully fixed and parsed JSON - recovered {len(companies)} companies")
+                        except Exception as ex2:
+                            logger.error(f"Strategy 2 failed: {ex2}")
+                            return []
                 else:
                     logger.error("No JSON array found in response")
                     return []

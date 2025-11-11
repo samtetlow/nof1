@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { PipelineResponse, MatchResult, apiService } from '../services/api';
 import ScoreVisualization from './ScoreVisualization';
 import SelectionConfirmation from './SelectionConfirmation';
+import WebsiteValidationPanel from './WebsiteValidationPanel';
 
 interface ResultsDisplayProps {
   results: PipelineResponse;
@@ -51,6 +52,33 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ results, solicitationTe
 
   return (
     <div className="space-y-6">
+      {/* Shortage Notice Banner */}
+      {results.shortage_notice && (
+        <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 rounded-r-lg shadow-sm">
+          <div className="flex items-start">
+            <svg className="w-6 h-6 text-yellow-600 mr-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <div className="flex-1">
+              <h3 className="text-sm font-semibold text-yellow-800 mb-1">
+                ⚠️ Fewer Companies Than Requested
+              </h3>
+              <p className="text-sm text-yellow-700 mb-2">
+                {results.shortage_notice.message}
+              </p>
+              <div className="flex items-center space-x-4 text-xs text-yellow-600">
+                <span>• Requested: <strong>{results.shortage_notice.requested}</strong></span>
+                <span>• Delivered: <strong>{results.shortage_notice.delivered}</strong></span>
+                <span>• Filtered Out: <strong>{results.shortage_notice.filtered_out}</strong></span>
+              </div>
+              <p className="text-xs text-yellow-600 mt-2 italic">
+                💡 These are all available companies that meet minimum search criteria (accessible website). No additional companies were found matching the solicitation requirements.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Results List and Details */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Company List - Scrollable */}
@@ -206,6 +234,23 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ results, solicitationTe
               </div>
             )}
 
+            {/* Website Validation & Partnering Opportunities */}
+            {selectedCompany.website_validation?.available && (
+              <WebsiteValidationPanel 
+                companyName={selectedCompany.company_name}
+                websiteUrl={selectedCompany.website || ''}
+                capabilities={selectedCompany.capabilities || []}
+                solicitationTitle={results.solicitation_summary?.title || ''}
+                preValidatedData={selectedCompany.website_validation.pre_validated ? {
+                  validation_score: selectedCompany.website_validation.validation_score,
+                  confirmed_capabilities: selectedCompany.website_validation.confirmed_capabilities,
+                  website_capabilities: selectedCompany.website_validation.website_capabilities,
+                  gaps_count: selectedCompany.website_validation.gaps_count,
+                  partnering_opportunities_count: selectedCompany.website_validation.partnering_opportunities_count
+                } : undefined}
+              />
+            )}
+
             {/* Decision Rationale */}
             <div className="bg-white rounded-lg shadow-sm p-6">
               <h4 className="text-sm font-semibold text-gray-900 mb-3">Decision Rationale</h4>
@@ -263,7 +308,7 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ results, solicitationTe
                 
                 // Clean up company name - remove Inc., LLC, Corp., etc.
                 const cleanCompanyName = result.company_name
-                  .replace(/,?\s*(Inc\.?|LLC\.?|Ltd\.?|Corp\.?|Corporation|Limited|Co\.?|Company|LP|LLP|PLLC|PC)\s*$/gi, '')
+                  .replace(/,?\s*(Inc\.?|LLC\.?|L\.L\.C\.?|Ltd\.?|Limited|Corp\.?|Corporation|Co\.?|Company|LP\.?|L\.P\.?|LLP\.?|L\.L\.P\.?|PLLC\.?|PC\.?|P\.C\.?|PLC\.?|P\.L\.C\.?|Incorporated|S\.A\.?|AG\.?|GmbH\.?|Pty\.?\s*Ltd\.?|N\.V\.?|B\.V\.?)\s*$/gi, '')
                   .trim();
                 
                 // Use ONLY the alignment_summary - this is the new 2-paragraph format
@@ -273,9 +318,9 @@ const ResultsDisplay: React.FC<ResultsDisplayProps> = ({ results, solicitationTe
                 
                 // Fallback if no content (also 2-paragraph format)
                 if (!whyMatchContent || whyMatchContent.trim().length < 50) {
-                  whyMatchContent = `Our research indicates that ${cleanCompanyName} aligns with this opportunity based on your sector expertise and capabilities. You specialize in relevant domains and have established operational capacity needed to address this program's objectives. Your focus positions you to support the goals of this solicitation.
+                  whyMatchContent = `Based on available information, ${cleanCompanyName} appears to align well with this opportunity based on your sector expertise and capabilities. You appear to specialize in relevant domains and may have operational capacity to address this program's objectives. Your focus suggests potential to support the goals of this solicitation.
 
-Our analysts show alignment between ${cleanCompanyName}'s technology and services and the solicitation's stated needs. Your capabilities directly address key focus areas. Your proven experience demonstrates your readiness to meet the program requirements.`;
+Analysis indicates possible alignment between ${cleanCompanyName}'s technology and services and the solicitation's stated needs. Your capabilities appear to address key focus areas. Your experience suggests readiness to meet the program requirements.`;
                 }
                 
                 return (

@@ -25,7 +25,7 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
     raw_text: '',
   });
 
-  const [enrich, setEnrich] = useState(false);
+  const [enrich, setEnrich] = useState(true);
   const [topK, setTopK] = useState(5);
   const [companyType, setCompanyType] = useState<'for-profit' | 'academic-nonprofit'>('for-profit');
   const [companySize, setCompanySize] = useState<'all' | 'small' | 'large'>('all');
@@ -85,7 +85,7 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
           ...prev,
           raw_text: text,
           solicitation_id: parsed.solicitation_id || '',
-          title: parsed.title || text.split('\n')[0].substring(0, 100) || 'Solicitation',
+          title: parsed.title || text.split('\n')[0].substring(0, 150) || 'Solicitation',
           agency: parsed.agency || '',
           naics_codes: parsed.naics_codes || [],
           set_asides: parsed.set_asides || [],
@@ -128,7 +128,7 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
         ...prev,
         raw_text: text,
         solicitation_id: parsed.solicitation_id || '',
-        title: parsed.title || text.split('\n')[0].substring(0, 100) || 'Solicitation',
+        title: parsed.title || text.split('\n')[0].substring(0, 150) || 'Solicitation',
         agency: parsed.agency || '',
         naics_codes: parsed.naics_codes || [],
         set_asides: parsed.set_asides || [],
@@ -280,7 +280,7 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
               </button>
               <div>
                 <label className="text-sm font-medium text-gray-700">Enable External Data Enrichment</label>
-                <p className="text-xs text-gray-500">Fetch data from USASpending, NIH, SBIR, USPTO, and AI sources</p>
+                <p className="text-xs text-gray-500">Fetch data from USASpending, NIH, USPTO, and other sources</p>
               </div>
             </div>
 
@@ -288,11 +288,14 @@ const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading 
               <label className="block text-sm font-medium text-gray-700 mb-1">
                 Top Companies to Analyze: {topK}
               </label>
-              <input type="range" min="1" max="20" value={topK} onChange={(e) => setTopK(parseInt(e.target.value))} className="w-full" />
+              <input type="range" min="1" max="100" value={topK} onChange={(e) => setTopK(parseInt(e.target.value))} className="w-full" />
               <div className="flex justify-between text-xs text-gray-500">
                 <span>1 (fastest)</span>
-                <span>20 (most comprehensive)</span>
+                <span>100 (most comprehensive)</span>
               </div>
+              <p className="text-xs text-gray-500 mt-1">
+                ⚠️ Analyzing 50+ companies may take 5-15 minutes depending on enrichment settings
+              </p>
             </div>
 
             <div>

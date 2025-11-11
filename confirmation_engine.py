@@ -9,6 +9,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 from dataclasses import dataclass, field
 from enum import Enum
+from website_validator import WebsiteValidator, WebsiteValidationResult
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class ConfirmationResult:
     summary: str
     timestamp: datetime
     detailed_analysis: Dict[str, Any] = field(default_factory=dict)
+    website_validation: Optional[WebsiteValidationResult] = None
 
 
 class ConfirmationEngine:
@@ -60,16 +62,20 @@ class ConfirmationEngine:
     5. Assess confidence in the match quality
     """
     
-    def __init__(self, weights: Optional[Dict[str, float]] = None):
+    def __init__(self, weights: Optional[Dict[str, float]] = None, openai_api_key: Optional[str] = None):
         # Weights for different confirmation factors
         self.weights = weights or {
-            "past_performance_confirmation": 0.25,
-            "capability_verification": 0.25,
-            "certification_validation": 0.15,
-            "size_clearance_confirmation": 0.15,
+            "past_performance_confirmation": 0.22,
+            "capability_verification": 0.22,
+            "certification_validation": 0.13,
+            "size_clearance_confirmation": 0.13,
             "market_presence": 0.10,
-            "technical_expertise": 0.10
+            "technical_expertise": 0.10,
+            "website_validation": 0.10  # New factor for website validation
         }
+        
+        # Initialize website validator
+        self.website_validator = WebsiteValidator(openai_api_key=openai_api_key)
     
     async def confirm_match(
         self,
@@ -130,6 +136,16 @@ class ConfirmationEngine:
         )
         factors.append(tech_factor)
         
+        # 7. NEW: Validate against company website and identify partnering opportunities
+        website_validation = await self.website_validator.validate_company_website(
+            company_data, solicitation_data, enrichment_data
+        )
+        
+        # Add website validation insights to factors if there are significant gaps
+        if website_validation.gaps_found:
+            website_factor = self._create_website_validation_factor(website_validation)
+            factors.append(website_factor)
+        
         # Calculate overall confirmation status and confidence
         overall_status, overall_confidence = self._calculate_overall_confirmation(factors)
         
@@ -150,7 +166,8 @@ class ConfirmationEngine:
                 "match_score": match_result.get("score", 0.0),
                 "enrichment_quality": self._assess_enrichment_quality(enrichment_data),
                 "data_completeness": self._assess_data_completeness(company_data, enrichment_data)
-            }
+            },
+            website_validation=website_validation
         )
     
     async def _confirm_past_performance(
@@ -711,6 +728,57 @@ class ConfirmationEngine:
             "enrichment_coverage": covered_sources / len(priority_sources),
             "overall_completeness": (filled_fields / len(key_fields) + covered_sources / len(priority_sources)) / 2
         }
+    
+    def _create_website_validation_factor(
+        self,
+        website_validation: WebsiteValidationResult
+    ) -> ConfirmationFactor:
+        """Create confirmation factor from website validation results"""
+        
+        evidence = []
+        contradictions = []
+        
+        # Add confirmed capabilities as evidence
+        if website_validation.confirmed_capabilities:
+            evidence.append(
+                f"Website confirms {len(website_validation.confirmed_capabilities)} claimed capabilities"
+            )
+        
+        # Add website capabilities found
+        if website_validation.website_capabilities:
+            evidence.append(
+                f"Website lists {len(website_validation.website_capabilities)} capabilities"
+            )
+        
+        # Add gaps as contradictions
+        for gap in website_validation.gaps_found:
+            if gap.severity >= 0.7:
+                contradictions.append(gap.description)
+            elif gap.severity >= 0.5:
+                evidence.append(f"⚠ {gap.description}")
+        
+        # Determine status based on validation score
+        validation_score = website_validation.validation_score
+        
+        if validation_score >= 0.8:
+            status = ConfirmationStatus.CONFIRMED
+        elif validation_score >= 0.6:
+            status = ConfirmationStatus.PARTIALLY_CONFIRMED
+        elif contradictions:
+            status = ConfirmationStatus.CONTRADICTED
+        elif not website_validation.website_accessible:
+            status = ConfirmationStatus.INSUFFICIENT_DATA
+        else:
+            status = ConfirmationStatus.UNCONFIRMED
+        
+        return ConfirmationFactor(
+            factor_name="website_validation",
+            status=status,
+            confidence=validation_score,
+            evidence=evidence,
+            contradictions=contradictions,
+            weight=self.weights.get("website_validation", 0.10)
+        )
 
 
 
