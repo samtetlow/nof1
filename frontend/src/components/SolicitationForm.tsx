@@ -7,12 +7,11 @@ interface SolicitationFormProps {
 }
 
 const SolicitationForm: React.FC<SolicitationFormProps> = ({ onAnalyze, loading }) => {
-  const [rawText, setRawText] = useState('');
+  const [, setRawText] = useState('');
   const [parsedData, setParsedData] = useState<any>(null);
   const [parsing, setParsing] = useState(false);
   const [fileName, setFileName] = useState('');
   const [dragActive, setDragActive] = useState(false);
-  const [uploadError, setUploadError] = useState<string | null>(null);
   
   const [formData, setFormData] = useState<Solicitation>({
     title: '',

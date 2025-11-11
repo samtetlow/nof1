@@ -52,16 +52,7 @@ const WebsiteValidationPanel: React.FC<WebsiteValidationPanelProps> = ({
   const [loading, setLoading] = useState(false);
   const [validationData, setValidationData] = useState<ValidationData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState(true); // Auto-expand since we have data
-  const [showPreValidatedSummary, setShowPreValidatedSummary] = useState(!!preValidatedData);
-
-  // Load full validation data on mount if we only have pre-validated summary
-  useEffect(() => {
-    if (preValidatedData && !validationData) {
-      // Auto-load full data since we know the website is accessible
-      loadValidation();
-    }
-  }, [preValidatedData]);
+  const [, setExpanded] = useState(true); // Auto-expand since we have data
 
   const loadValidation = async () => {
     if (!websiteUrl) return;
@@ -87,6 +78,15 @@ const WebsiteValidationPanel: React.FC<WebsiteValidationPanelProps> = ({
       setLoading(false);
     }
   };
+
+  // Load full validation data on mount if we only have pre-validated summary
+  useEffect(() => {
+    if (preValidatedData && !validationData) {
+      // Auto-load full data since we know the website is accessible
+      loadValidation();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preValidatedData]);
 
   const getSeverityColor = (severity: number): string => {
     if (severity >= 0.7) return 'text-red-600 bg-red-50';

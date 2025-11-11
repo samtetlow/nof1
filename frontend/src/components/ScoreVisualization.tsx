@@ -1,6 +1,5 @@
 import React from 'react';
 import { MatchResult } from '../services/api';
-import { RadialBarChart, RadialBar, Legend, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Cell } from 'recharts';
 
 interface ScoreVisualizationProps {
   result: MatchResult;
