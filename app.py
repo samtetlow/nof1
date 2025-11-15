@@ -2095,6 +2095,8 @@ async def full_pipeline(
         logger.info(f"Fallback agency name for results: {fallback_agency_name}")
         
         # Format confirmed results
+        logger.info(f"🔍 DEBUG: Building final_results from {len(combined_results)} combined_results")
+        logger.info(f"🔍 DEBUG: Requested {requested_count} companies, actual_count={actual_count}")
         final_results = []
         for idx, result in enumerate(combined_results, 1):
             company = result['company']
@@ -2225,6 +2227,9 @@ Your capabilities appear to address aspects of the solicitation's stated require
 Your capabilities appear to address aspects of the solicitation's stated requirements. You show technical expertise, methodologies, and industry experience that may align with program needs. Your track record suggests readiness to execute, though verification of specific capabilities would strengthen the proposal evaluation."""
         
         # Return all results (no pagination - slider determines count)
+        logger.info(f"🔍 DEBUG FINAL: Returning {len(final_results)} companies in response (requested {top_k})")
+        logger.info(f"🔍 DEBUG FINAL: search_results had {len(search_results)} companies")
+        logger.info(f"🔍 DEBUG FINAL: combined_results had {len(combined_results)} companies")
         response_data = {
             "solicitation_summary": {
                 "title": sol_dict.get("title") or solicitation.title or "Uploaded Solicitation",
