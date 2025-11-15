@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-// Runtime configuration - works in both development and production
+// Runtime configuration - LAZY evaluation to ensure config.js has loaded
 // Priority: window.APP_CONFIG (runtime) > REACT_APP_API_URL (build-time) > localhost (fallback)
 const getApiUrl = (): string => {
   // 1. Check runtime config (from public/config.js) - works in production without rebuild
@@ -17,25 +17,40 @@ const getApiUrl = (): string => {
   return 'http://localhost:8000';
 };
 
-const API_BASE_URL = getApiUrl();
-
-// Log API URL for debugging (always log in production to verify)
-console.log('🔍 API Base URL:', API_BASE_URL);
-console.log('🔍 Config source:', 
-  typeof window !== 'undefined' && (window as any).APP_CONFIG?.API_URL 
-    ? 'runtime (config.js)' 
-    : process.env.REACT_APP_API_URL 
-      ? 'build-time (env var)' 
-      : 'fallback (localhost)'
-);
-
+// Create axios instance with dynamic baseURL that's evaluated on each request
+// Create axios instance - baseURL will be set dynamically via interceptor
 const api = axios.create({
-  baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
   timeout: 1200000, // 20 minute timeout for long-running operations (100 companies)
   validateStatus: (status) => status < 500, // Don't throw on 4xx errors
+});
+
+// Set baseURL dynamically via request interceptor (runs on every request)
+api.interceptors.request.use((config) => {
+  // Get API URL dynamically on each request (ensures config.js has loaded)
+  const apiUrl = getApiUrl();
+  
+  // Log first request only
+  if (!(api as any)._urlLogged) {
+    console.log('🔍 API Base URL:', apiUrl);
+    console.log('🔍 Config source:', 
+      typeof window !== 'undefined' && (window as any).APP_CONFIG?.API_URL 
+        ? 'runtime (config.js)' 
+        : process.env.REACT_APP_API_URL 
+          ? 'build-time (env var)' 
+          : 'fallback (localhost)'
+    );
+    (api as any)._urlLogged = true;
+  }
+  
+  // Set baseURL if not already set (relative URLs)
+  if (!config.baseURL) {
+    config.baseURL = apiUrl;
+  }
+  
+  return config;
 });
 
 // Retry logic for network errors
