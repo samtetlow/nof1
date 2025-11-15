@@ -51,24 +51,26 @@ class ThemeBasedSearch:
                 search_tasks.append(self._search_google(term))
         
         # 2. USASpending.gov for companies with relevant contracts
-        if "usaspending" in self.dsm.sources:
+        if "usaspending" in self.dsm.sources and hasattr(self.dsm.sources["usaspending"], 'search_contracts'):
             search_tasks.append(self._search_usaspending(search_terms))
         
         # 3. NIH Reporter for companies with relevant grants
-        if "nih_reporter" in self.dsm.sources:
+        if "nih" in self.dsm.sources and hasattr(self.dsm.sources["nih"], 'search_contracts'):
             search_tasks.append(self._search_nih(search_terms))
         
         # 4. SBIR.gov for companies with relevant SBIR awards
-        if "sbir" in self.dsm.sources:
+        if "sbir" in self.dsm.sources and hasattr(self.dsm.sources["sbir"], 'search_contracts'):
             search_tasks.append(self._search_sbir(search_terms))
         
         # 5. Pitchbook for private company data and funding
         if "pitchbook" in self.dsm.sources:
             search_tasks.append(self._search_pitchbook(search_terms, themes))
         
-        # 6. ChatGPT for AI-powered company recommendations
+        # 6. ChatGPT for AI-powered company recommendations (PRIMARY SOURCE - always try)
         if "chatgpt" in self.dsm.sources:
             search_tasks.append(self._search_chatgpt(themes, max_companies, company_type, company_size))
+        else:
+            logger.warning("⚠️ ChatGPT source not available - this is the primary search method!")
         
         # Execute all searches in parallel
         if search_tasks:
@@ -82,7 +84,12 @@ class ThemeBasedSearch:
                 if result:
                     discovered_companies.extend(result)
         else:
-            logger.warning("No data sources enabled for search")
+            logger.error("❌ No search tasks available - check data source configuration")
+            # Ensure we at least try ChatGPT if it's available
+            if "chatgpt" in self.dsm.sources:
+                logger.info("Trying ChatGPT search as fallback...")
+                chatgpt_results = await self._search_chatgpt(themes, max_companies, company_type, company_size)
+                discovered_companies.extend(chatgpt_results)
         
         # Deduplicate and score companies
         unique_companies = self._deduplicate_companies(discovered_companies)
@@ -168,6 +175,11 @@ class ThemeBasedSearch:
         logger.info(f"Searching USASpending.gov for {len(search_terms)} terms")
         
         try:
+            # Check if source supports search_contracts
+            if not hasattr(self.dsm.sources["usaspending"], 'search_contracts'):
+                logger.debug("USASpending source doesn't support search_contracts - skipping")
+                return []
+            
             companies = []
             
             # Search for contracts containing any of our key terms
@@ -193,7 +205,7 @@ class ThemeBasedSearch:
             logger.info(f"USASpending found {len(companies)} companies")
             return companies
         except Exception as e:
-            logger.error(f"USASpending search error: {e}")
+            logger.debug(f"USASpending search error: {e}")
             return []
     
     async def _search_nih(self, search_terms: List[str]) -> List[Dict[str, Any]]:
@@ -201,10 +213,15 @@ class ThemeBasedSearch:
         logger.info(f"Searching NIH Reporter for {len(search_terms)} terms")
         
         try:
+            # Check if source supports search_contracts
+            if "nih" not in self.dsm.sources or not hasattr(self.dsm.sources.get("nih"), 'search_contracts'):
+                logger.debug("NIH source doesn't support search_contracts - skipping")
+                return []
+            
             companies = []
             
             for term in search_terms[:10]:
-                grants = await self.dsm.sources["nih_reporter"].search_contracts("", {
+                grants = await self.dsm.sources["nih"].search_contracts("", {
                     'keyword': term,
                     'limit': 5
                 })
@@ -224,7 +241,7 @@ class ThemeBasedSearch:
             logger.info(f"NIH found {len(companies)} organizations")
             return companies
         except Exception as e:
-            logger.error(f"NIH search error: {e}")
+            logger.debug(f"NIH search error: {e}")
             return []
     
     async def _search_sbir(self, search_terms: List[str]) -> List[Dict[str, Any]]:
@@ -232,6 +249,11 @@ class ThemeBasedSearch:
         logger.info(f"Searching SBIR.gov for {len(search_terms)} terms")
         
         try:
+            # Check if source supports search_contracts
+            if not hasattr(self.dsm.sources["sbir"], 'search_contracts'):
+                logger.debug("SBIR source doesn't support search_contracts - skipping")
+                return []
+            
             companies = []
             
             for term in search_terms[:10]:
@@ -256,7 +278,7 @@ class ThemeBasedSearch:
             logger.info(f"SBIR found {len(companies)} companies")
             return companies
         except Exception as e:
-            logger.error(f"SBIR search error: {e}")
+            logger.debug(f"SBIR search error: {e}")
             return []
     
     async def _search_chatgpt(self, themes: Dict[str, Any], max_companies: int = 10, company_type: str = "for-profit", company_size: str = "all") -> List[Dict[str, Any]]:

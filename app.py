@@ -1814,8 +1814,49 @@ async def full_pipeline(
         
         search_results = await theme_search.search_by_themes(themes, max_companies=initial_request_count, company_type=company_type, company_size=company_size)
         
+        # Fallback to database search if external searches return no results
         if not search_results:
-            logger.warning("No companies found - API keys may not be configured")
+            logger.warning("No companies found from external searches - falling back to database")
+            db = SessionLocal()
+            try:
+                me = MatchingEngine(weights=load_weights())
+                companies = db.query(CompanyORM).all()
+                
+                # Apply size filter
+                if company_size == "small":
+                    companies = [c for c in companies if c.size and "small" in c.size.lower()]
+                elif company_size == "large":
+                    companies = [c for c in companies if c.size and "large" in c.size.lower()]
+                
+                # Score companies
+                scored = []
+                for c in companies:
+                    score, strengths, gaps = me.score(sol_dict, c)
+                    scored.append((c, score, strengths, gaps))
+                
+                scored.sort(key=lambda x: x[1], reverse=True)
+                
+                # Convert to search_results format
+                for c, score, strengths, gaps in scored[:initial_request_count]:
+                    search_results.append({
+                        "name": c.name,
+                        "company_id": c.company_id,
+                        "relevance_score": score,
+                        "description": c.description or "",
+                        "capabilities": c.capabilities or [],
+                        "naics_codes": c.naics_codes or [],
+                        "website": getattr(c, 'website', None),
+                        "source": "database"
+                    })
+                
+                logger.info(f"Database fallback found {len(search_results)} companies")
+            except Exception as e:
+                logger.error(f"Database fallback failed: {e}")
+            finally:
+                db.close()
+        
+        if not search_results:
+            logger.error("No companies found from external searches - check API keys and theme extraction")
             return {
                 "solicitation_summary": {
                     "title": sol_dict.get("title") or solicitation.title or "Uploaded Solicitation",
@@ -1863,7 +1904,7 @@ async def full_pipeline(
             
             # Create a wrapper function that can be run in thread pool
             def run_confirmation_sync(company_name, company_description):
-                """Synchronous wrapper for running confirmation"""
+                """Synchronous wrapper for running confirmation with timeout"""
                 import asyncio
                 import time
                 thread_start = time.time()
@@ -1872,17 +1913,49 @@ async def full_pipeline(
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
                 try:
-                    result = loop.run_until_complete(confirm_single_company(
-                        company_name=company_name,
-                        solicitation_title=solicitation_title,
-                        themes=themes,
-                        chatgpt_source=chatgpt_source,
-                        company_description=company_description,
-                        agency=solicitation_agency
-                    ))
+                    # Add timeout per company: 90 seconds max per confirmation
+                    result = loop.run_until_complete(
+                        asyncio.wait_for(
+                            confirm_single_company(
+                                company_name=company_name,
+                                solicitation_title=solicitation_title,
+                                themes=themes,
+                                chatgpt_source=chatgpt_source,
+                                company_description=company_description,
+                                agency=solicitation_agency
+                            ),
+                            timeout=90.0  # 90 second timeout per company
+                        )
+                    )
                     thread_end = time.time()
                     logger.info(f"✅ Thread completed for {company_name} in {thread_end - thread_start:.1f}s")
                     return result
+                except asyncio.TimeoutError:
+                    thread_end = time.time()
+                    logger.error(f"⏰ Timeout for {company_name} after {thread_end - thread_start:.1f}s")
+                    return {
+                        'company_name': company_name,
+                        'is_confirmed': False,
+                        'confidence_score': 0.5,
+                        'recommendation': 'reconsider',
+                        'reasoning': 'Confirmation timed out after 90 seconds',
+                        'chain_of_thought': ['Timeout occurred during confirmation'],
+                        'findings': {},
+                        'alignment_summary': f'Confirmation analysis for {company_name} timed out. Please try again or review manually.'
+                    }
+                except Exception as e:
+                    thread_end = time.time()
+                    logger.error(f"❌ Error confirming {company_name} after {thread_end - thread_start:.1f}s: {e}")
+                    return {
+                        'company_name': company_name,
+                        'is_confirmed': False,
+                        'confidence_score': 0.5,
+                        'recommendation': 'reconsider',
+                        'reasoning': f'Confirmation error: {str(e)[:100]}',
+                        'chain_of_thought': ['Error occurred during confirmation'],
+                        'findings': {},
+                        'alignment_summary': f'Confirmation analysis for {company_name} encountered an error. Please review manually.'
+                    }
                 finally:
                     loop.close()
             
@@ -1901,9 +1974,29 @@ async def full_pipeline(
                     )
                     confirmation_tasks.append(task)
                 
-                # Wait for all to complete
+                # Wait for all to complete with timeout
                 logger.info(f"⏳ Waiting for all {len(confirmation_tasks)} tasks to complete...")
-                confirmation_results = await asyncio.gather(*confirmation_tasks, return_exceptions=True)
+                # Add timeout: 60 seconds per company, max 10 minutes total
+                timeout_seconds = min(600, max(60, len(confirmation_tasks) * 60))
+                try:
+                    confirmation_results = await asyncio.wait_for(
+                        asyncio.gather(*confirmation_tasks, return_exceptions=True),
+                        timeout=timeout_seconds
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"⏰ Confirmation timeout after {timeout_seconds}s - some companies may not be confirmed")
+                    # Get partial results - gather what completed
+                    confirmation_results = []
+                    for task in confirmation_tasks:
+                        if task.done():
+                            try:
+                                confirmation_results.append(await task)
+                            except Exception as e:
+                                confirmation_results.append(e)
+                        else:
+                            # Task didn't complete - add None as placeholder
+                            confirmation_results.append(None)
+                            logger.warning(f"Task timed out - adding None placeholder")
             
             end_time = time.time()
             total_time = end_time - start_time
