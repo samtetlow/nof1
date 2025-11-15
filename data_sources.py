@@ -575,10 +575,6 @@ DO NOT include any markdown formatting or code blocks, just the raw JSON array."
         except Exception as e:
             logger.error(f"ChatGPT single call error: {type(e).__name__}: {e}")
             return []
-            elif "authentication" in str(e).lower() or "api_key" in str(e).lower():
-                logger.error("⚠️ API KEY INVALID - Check your OpenAI API key")
-            
-            return []
 
 
 class GoogleSource:
