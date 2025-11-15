@@ -193,14 +193,24 @@ class ChatGPTSource:
             
             themes = filters.get('themes', {})
             requested_companies = filters.get('max_companies', 10) if filters else 10
-            # GPT-4o-mini supports 4096 completion tokens (not 16K!)
-            # With ~200 tokens per company + 500 buffer, max is ~18 companies
-            # Cap at 18 to stay within token limits
-            max_companies = max(1, min(requested_companies, 18))
-            if requested_companies > 18:
-                logger.warning(f"⚠️ Requested {requested_companies} companies, but capped at 18 due to GPT-4o-mini token limit (4096 max)")
             company_type = filters.get('company_type', 'for-profit') if filters else 'for-profit'
             company_size = filters.get('company_size', 'all') if filters else 'all'
+            
+            # GPT-4o-mini supports 4096 completion tokens per call
+            # With ~200 tokens per company + 500 buffer, max is ~18 companies per call
+            # For 16K tokens total, we can make multiple calls (16K / 4096 = ~4 calls = ~72 companies max)
+            companies_per_call = 18  # Safe limit per API call
+            max_companies = min(requested_companies, 80)  # Cap at 80 for practical reasons (4 calls × 18)
+            
+            if requested_companies > 80:
+                logger.warning(f"⚠️ Requested {requested_companies} companies, but capped at 80 (4 API calls × 18 companies each)")
+            
+            # If we need more than 18 companies, make multiple API calls
+            if max_companies > companies_per_call:
+                logger.info(f"📞 Making multiple API calls: {max_companies} companies requested, {companies_per_call} per call")
+                return await self._search_chatgpt_multiple_calls(
+                    themes, max_companies, companies_per_call, company_type, company_size
+                )
             
             problem_statement = themes.get('problem_statement', '')
             problem_areas = themes.get('problem_areas', []) or []
@@ -229,6 +239,7 @@ class ChatGPTSource:
             else:  # company_size == "all"
                 size_requirement = "\n\n**SIZE REQUIREMENT: Include companies of ALL SIZES - both small businesses (≤500 employees) AND large corporations (>500 employees). Provide a diverse mix of company sizes in your suggestions.**"
             
+            # Build prompt for single call
             prompt = f"""You are helping identify companies for a government solicitation. Be VERY SPECIFIC and match companies to the exact domain and requirements below.
 
 SOLICITATION FOCUS:
