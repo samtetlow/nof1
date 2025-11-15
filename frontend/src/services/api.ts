@@ -270,6 +270,15 @@ export const apiService = {
     companySize: 'all' | 'small' | 'large' = 'all'
   ): Promise<PipelineResponse> {
     return retryRequest(async () => {
+      // Log request parameters for debugging
+      console.log('🔍 API Request - runFullPipeline:', {
+        top_k: topK,
+        company_type: companyType,
+        company_size: companySize,
+        enrich,
+        api_url: api.defaults.baseURL || 'not set'
+      });
+      
       const response = await api.post('/api/full-pipeline', {
         solicitation,
         company_id: companyId,
@@ -277,6 +286,15 @@ export const apiService = {
         top_k: topK,
         company_type: companyType,
         company_size: companySize,
+      });
+      
+      // Log response for debugging
+      console.log('🔍 API Response - runFullPipeline:', {
+        status: response.status,
+        companies_returned: response.data?.results?.length || 0,
+        requested: topK,
+        companies_evaluated: response.data?.companies_evaluated || 0,
+        top_matches_analyzed: response.data?.top_matches_analyzed || 0
       });
       
       if (response.status >= 400) {
