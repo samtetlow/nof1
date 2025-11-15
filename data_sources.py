@@ -394,12 +394,187 @@ DO NOT include any markdown formatting or code blocks, just the raw JSON array."
             logger.error(f"ChatGPT company search error: {type(e).__name__}: {e}")
             import traceback
             logger.error(f"Traceback: {traceback.format_exc()}")
+            return []
+    
+    async def _search_chatgpt_multiple_calls(
+        self, themes: Dict[str, Any], total_companies: int, companies_per_call: int,
+        company_type: str, company_size: str
+    ) -> List[Dict[str, Any]]:
+        """Make multiple API calls to get more than 18 companies (up to 16K tokens total)"""
+        all_companies = []
+        num_calls = (total_companies + companies_per_call - 1) // companies_per_call  # Ceiling division
+        
+        logger.info(f"🔄 Making {num_calls} API calls to get {total_companies} companies ({companies_per_call} per call)")
+        
+        for call_num in range(num_calls):
+            companies_in_this_call = min(companies_per_call, total_companies - len(all_companies))
+            if companies_in_this_call <= 0:
+                break
             
-            # Check for specific error types
-            if "rate_limit" in str(e).lower():
-                logger.error("⚠️ RATE LIMIT EXCEEDED - Try again in a moment")
-            elif "timeout" in str(e).lower():
-                logger.error("⚠️ REQUEST TIMEOUT - API took too long to respond")
+            logger.info(f"📞 API Call {call_num + 1}/{num_calls}: Requesting {companies_in_this_call} companies")
+            
+            # Make a single API call with the subset
+            call_results = await self._search_chatgpt_single_call(
+                themes, companies_in_this_call, company_type, company_size
+            )
+            
+            if call_results:
+                all_companies.extend(call_results)
+                logger.info(f"✅ Call {call_num + 1} returned {len(call_results)} companies (total so far: {len(all_companies)})")
+            else:
+                logger.warning(f"⚠️ Call {call_num + 1} returned 0 companies")
+            
+            # Stop if we have enough
+            if len(all_companies) >= total_companies:
+                break
+        
+        # Deduplicate by company name
+        seen_names = set()
+        unique_companies = []
+        for company in all_companies:
+            name = company.get('name', '').strip().lower()
+            if name and name not in seen_names:
+                seen_names.add(name)
+                unique_companies.append(company)
+        
+        logger.info(f"✅ Multiple calls complete: {len(unique_companies)} unique companies from {num_calls} API calls")
+        return unique_companies[:total_companies]  # Trim to requested amount
+    
+    async def _search_chatgpt_single_call(
+        self, themes: Dict[str, Any], max_companies: int, company_type: str, company_size: str
+    ) -> List[Dict[str, Any]]:
+        """Single ChatGPT API call - extracted for reuse in multiple calls"""
+        try:
+            problem_statement = themes.get('problem_statement', '')
+            problem_areas = themes.get('problem_areas', []) or []
+            key_priorities = themes.get('key_priorities', []) or []
+            technical_capabilities = themes.get('technical_capabilities', []) or []
+            search_keywords = themes.get('search_keywords', []) or []
+            
+            # Build type requirement
+            type_requirement = ""
+            if company_type == "academic-nonprofit":
+                type_requirement = "\n\n**CRITICAL TYPE REQUIREMENT: ONLY suggest ACADEMIC INSTITUTIONS, UNIVERSITIES, RESEARCH CENTERS, NON-PROFIT ORGANIZATIONS, or 501(c)(3) entities. This is a strict requirement. DO NOT include for-profit companies, corporations, or commercial contractors.**"
+            else:  # for-profit
+                type_requirement = "\n\n**CRITICAL TYPE REQUIREMENT: ONLY suggest FOR-PROFIT COMPANIES, CORPORATIONS, or COMMERCIAL CONTRACTORS. This is a strict requirement. DO NOT include academic institutions, universities, non-profits, or research centers.**"
+            
+            # Build size requirement
+            size_requirement = ""
+            if company_size == "small":
+                size_requirement = "\n\n**CRITICAL SIZE REQUIREMENT: ONLY suggest companies with 500 EMPLOYEES OR FEWER. This is a strict requirement - companies must be small businesses (≤500 employees). Include small business certified companies, SBA 8(a), woman-owned, veteran-owned, or other qualifying small contractors. Absolutely DO NOT include any large corporations, Fortune 500 companies, or firms with more than 500 employees.**"
+            elif company_size == "large":
+                size_requirement = "\n\n**CRITICAL SIZE REQUIREMENT: ONLY suggest companies with MORE THAN 500 EMPLOYEES. This is a strict requirement - companies must be large businesses (>500 employees). Include Fortune 500, major corporations, large established firms. Absolutely DO NOT include small businesses, startups, or firms with 500 or fewer employees.**"
+            else:  # company_size == "all"
+                size_requirement = "\n\n**SIZE REQUIREMENT: Include companies of ALL SIZES - both small businesses (≤500 employees) AND large corporations (>500 employees). Provide a diverse mix of company sizes in your suggestions.**"
+            
+            prompt = f"""You are helping identify companies for a government solicitation. Be VERY SPECIFIC and match companies to the exact domain and requirements below.
+
+SOLICITATION FOCUS:
+{problem_statement[:500] if problem_statement else 'Not specified'}
+
+SPECIFIC PROBLEM AREAS (CRITICAL - Match companies to these exact problems):
+{chr(10).join([f"• {area}" for area in problem_areas[:5]])}
+
+KEY PRIORITIES:
+{chr(10).join([f"• {priority}" for priority in key_priorities[:5]])}
+
+REQUIRED TECHNICAL CAPABILITIES:
+{chr(10).join([f"• {cap.get('area', cap) if isinstance(cap, dict) else cap}" for cap in technical_capabilities[:5]])}
+
+SEARCH KEYWORDS: {', '.join(search_keywords[:10])}{type_requirement}{size_requirement}
+
+Based on the EXACT requirements above, suggest EXACTLY {max_companies} REAL companies that specialize in this specific domain. DO NOT suggest generic IT contractors unless they have specific expertise in these areas. YOU MUST return exactly {max_companies} companies - no more, no less.
+
+For each company, provide:
+1. Company name (real companies with expertise in THIS specific domain)
+2. Brief description (focused on their relevance to THIS solicitation)
+3. Why they're a perfect match for THESE specific requirements
+4. Website (if known)
+5. Key capabilities (matching the requirements above)
+
+Return ONLY a JSON array with fields: name, description, match_reason, website, capabilities
+DO NOT include any markdown formatting or code blocks, just the raw JSON array."""
+            
+            # Calculate max_tokens based on requested companies
+            estimated_tokens = (max_companies * 200) + 500
+            max_tokens_needed = min(estimated_tokens, 4096)
+            
+            max_companies_by_tokens = (max_tokens_needed - 500) // 200
+            if max_companies > max_companies_by_tokens:
+                max_companies = max_companies_by_tokens
+                estimated_tokens = (max_companies * 200) + 500
+                max_tokens_needed = min(estimated_tokens, 4096)
+            
+            logger.info(f"Using max_tokens={max_tokens_needed} for {max_companies} companies (GPT-4o-mini, capped at 4096)")
+            
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are an expert at identifying companies for government contracts. You have deep knowledge of companies across all industries including healthcare, biotech, agriculture, cybersecurity, manufacturing, energy, and more. Be specific and match companies to the exact domain requirements."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=max_tokens_needed,
+                temperature=0.7
+            )
+            
+            content = response.choices[0].message.content.strip()
+            
+            # Remove markdown code blocks if present
+            if content.startswith("```json"):
+                content = content[7:]
+            if content.startswith("```"):
+                content = content[3:]
+            if content.endswith("```"):
+                content = content[:-3]
+            content = content.strip()
+            
+            if not content or len(content) < 10:
+                logger.error("ChatGPT returned empty or invalid response")
+                return []
+            
+            try:
+                companies = json.loads(content)
+            except json.JSONDecodeError as e:
+                logger.error(f"ChatGPT JSON parsing error: {e}")
+                json_match = re.search(r'\[.*\]', content, re.DOTALL)
+                if json_match:
+                    try:
+                        companies = json.loads(json_match.group(0))
+                    except Exception:
+                        try:
+                            fixed_content = re.sub(r',\s*([}\]])', r'\1', json_match.group(0))
+                            companies = json.loads(fixed_content)
+                        except Exception:
+                            return []
+                else:
+                    return []
+            
+            if not isinstance(companies, list):
+                return []
+            
+            results = []
+            for company in companies:
+                if not isinstance(company, dict):
+                    continue
+                company_name = company.get('name', '').strip()
+                if not company_name:
+                    continue
+                results.append({
+                    'name': company_name,
+                    'company_name': company_name,
+                    'description': company.get('description', '').strip(),
+                    'match_reason': company.get('match_reason', '').strip(),
+                    'website': company.get('website', '').strip(),
+                    'capabilities': company.get('capabilities', []) if isinstance(company.get('capabilities'), list) else [],
+                    'source': 'chatgpt',
+                    'confidence': 0.7
+                })
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"ChatGPT single call error: {type(e).__name__}: {e}")
+            return []
             elif "authentication" in str(e).lower() or "api_key" in str(e).lower():
                 logger.error("⚠️ API KEY INVALID - Check your OpenAI API key")
             
