@@ -1,14 +1,33 @@
 import axios from 'axios';
 
-// API URL - set via environment variable (REACT_APP_API_URL)
-// For Vercel: Must be set in Dashboard → Settings → Environment Variables
-// Then rebuild/redeploy for changes to take effect
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+// Runtime configuration - works in both development and production
+// Priority: window.APP_CONFIG (runtime) > REACT_APP_API_URL (build-time) > localhost (fallback)
+const getApiUrl = (): string => {
+  // 1. Check runtime config (from public/config.js) - works in production without rebuild
+  if (typeof window !== 'undefined' && (window as any).APP_CONFIG?.API_URL) {
+    return (window as any).APP_CONFIG.API_URL;
+  }
+  
+  // 2. Check build-time env variable (for local development)
+  if (process.env.REACT_APP_API_URL) {
+    return process.env.REACT_APP_API_URL;
+  }
+  
+  // 3. Fallback to localhost for local development
+  return 'http://localhost:8000';
+};
 
-// Debug: Log API URL in development (removed in production build)
-if (process.env.NODE_ENV === 'development') {
-  console.log('🔍 API Base URL:', API_BASE_URL);
-}
+const API_BASE_URL = getApiUrl();
+
+// Log API URL for debugging (always log in production to verify)
+console.log('🔍 API Base URL:', API_BASE_URL);
+console.log('🔍 Config source:', 
+  typeof window !== 'undefined' && (window as any).APP_CONFIG?.API_URL 
+    ? 'runtime (config.js)' 
+    : process.env.REACT_APP_API_URL 
+      ? 'build-time (env var)' 
+      : 'fallback (localhost)'
+);
 
 const api = axios.create({
   baseURL: API_BASE_URL,
