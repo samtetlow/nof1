@@ -1,6 +1,14 @@
 import axios from 'axios';
 
+// API URL - set via environment variable (REACT_APP_API_URL)
+// For Vercel: Must be set in Dashboard → Settings → Environment Variables
+// Then rebuild/redeploy for changes to take effect
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+
+// Debug: Log API URL in development (removed in production build)
+if (process.env.NODE_ENV === 'development') {
+  console.log('🔍 API Base URL:', API_BASE_URL);
+}
 
 const api = axios.create({
   baseURL: API_BASE_URL,
