@@ -1814,6 +1814,13 @@ async def full_pipeline(
         
         search_results = await theme_search.search_by_themes(themes, max_companies=initial_request_count, company_type=company_type, company_size=company_size)
         
+        logger.info(f"🔍 DEBUG SEARCH: Theme search returned {len(search_results)} companies")
+        if len(search_results) == 0:
+            logger.error("❌ CRITICAL: Theme search returned 0 companies!")
+            logger.error(f"   Themes available: {list(themes.keys())}")
+            logger.error(f"   Search keywords: {themes.get('search_keywords', [])[:5]}")
+            logger.error(f"   Problem areas: {themes.get('problem_areas', [])[:3]}")
+        
         # Fallback to database search if external searches return no results
         if not search_results:
             logger.warning("No companies found from external searches - falling back to database")
