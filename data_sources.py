@@ -193,11 +193,12 @@ class ChatGPTSource:
             
             themes = filters.get('themes', {})
             requested_companies = filters.get('max_companies', 10) if filters else 10
-            # GPT-4o-mini supports 16K tokens output - can handle 80+ companies
-            # Cap at 150 for practical reasons (quality over quantity)
-            max_companies = max(1, min(requested_companies, 150))
-            if requested_companies > 150:
-                logger.warning(f"Requested {requested_companies} companies, but capped at 150 for quality")
+            # GPT-4o-mini supports 4096 completion tokens (not 16K!)
+            # With ~200 tokens per company + 500 buffer, max is ~18 companies
+            # Cap at 18 to stay within token limits
+            max_companies = max(1, min(requested_companies, 18))
+            if requested_companies > 18:
+                logger.warning(f"⚠️ Requested {requested_companies} companies, but capped at 18 due to GPT-4o-mini token limit (4096 max)")
             company_type = filters.get('company_type', 'for-profit') if filters else 'for-profit'
             company_size = filters.get('company_size', 'all') if filters else 'all'
             
@@ -260,9 +261,22 @@ DO NOT include any markdown formatting or code blocks, just the raw JSON array."
             # Rough estimate: ~200 tokens per company entry (name, description, match_reason, website, capabilities)
             # Add 500 buffer for JSON structure
             estimated_tokens = (max_companies * 200) + 500
-            # Cap at 16000 (GPT-4o-mini supports 16K output tokens)
-            max_tokens_needed = min(estimated_tokens, 16000)
-            logger.info(f"Using max_tokens={max_tokens_needed} for {max_companies} companies (GPT-4o-mini)")
+            # CRITICAL: GPT-4o-mini supports max 4096 completion tokens (not 16K!)
+            # Cap at 4096 to avoid API errors
+            max_tokens_needed = min(estimated_tokens, 4096)
+            
+            # If max_tokens would be too high, reduce the number of companies requested
+            # Reserve 500 tokens for JSON structure, so we have ~3596 tokens for companies
+            # That's about 17-18 companies max (3596 / 200 = ~18)
+            max_companies_by_tokens = (max_tokens_needed - 500) // 200
+            if max_companies > max_companies_by_tokens:
+                logger.warning(f"⚠️ Requested {max_companies} companies but token limit allows only {max_companies_by_tokens} (max_tokens={max_tokens_needed})")
+                max_companies = max_companies_by_tokens
+                # Recalculate with reduced company count
+                estimated_tokens = (max_companies * 200) + 500
+                max_tokens_needed = min(estimated_tokens, 4096)
+            
+            logger.info(f"Using max_tokens={max_tokens_needed} for {max_companies} companies (GPT-4o-mini, capped at 4096)")
             
             response = self.client.chat.completions.create(
                 model=self.model,
