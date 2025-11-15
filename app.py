@@ -1806,11 +1806,11 @@ async def full_pipeline(
         logger.info(f"Company size filter: {company_size}")
         logger.info(f"Requesting {top_k} companies as specified by slider")
         
-        # NEW: Request MORE companies initially to account for website filtering
-        # Request 1.3x the desired amount (reduced from 2x for speed - most companies pass now)
+        # NEW: Request MORE companies initially to account for confirmations that may fail/timeout
+        # Request 1.5x the desired amount to ensure we have enough after confirmations
         # Cap at 200 (max useful limit given ChatGPT's 150 cap + buffer)
-        initial_request_count = min(int(top_k * 1.3), 200)
-        logger.info(f"🔍 Requesting {initial_request_count} companies initially (1.3x requested for buffer)")
+        initial_request_count = min(int(top_k * 1.5), 200)
+        logger.info(f"🔍 Requesting {initial_request_count} companies initially (1.5x requested {top_k} for buffer against timeouts/failures)")
         
         search_results = await theme_search.search_by_themes(themes, max_companies=initial_request_count, company_type=company_type, company_size=company_size)
         
@@ -2067,18 +2067,25 @@ async def full_pipeline(
         actual_count = len(validated_results)
         shortage_message = None
         
+        # Log the count for debugging
+        logger.info(f"📊 Count check: Requested {requested_count}, Have {actual_count} validated companies")
+        
         if actual_count < requested_count:
             shortage = requested_count - actual_count
             logger.warning(f"⚠️ SHORTAGE: Requested {requested_count} companies, but only {actual_count} passed validation")
             logger.warning(f"   {companies_filtered} companies filtered due to inaccessible websites")
             logger.warning(f"   Short by {shortage} companies - showing all available validated companies")
             shortage_message = f"Requested {requested_count} companies, but only {actual_count} met minimum search criteria (accessible website). {companies_filtered} companies were filtered out due to inaccessible websites."
+            # Still return what we have - don't filter further
         else:
             logger.info(f"✅ SUCCESS: Have {actual_count} validated companies (requested {requested_count})")
-            # Trim to requested count
-            validated_results = validated_results[:requested_count]
-            actual_count = len(validated_results)
-            logger.info(f"   Trimmed to requested {requested_count} companies")
+            # Trim to requested count - CRITICAL: Only trim if we have MORE than requested
+            if actual_count > requested_count:
+                validated_results = validated_results[:requested_count]
+                actual_count = len(validated_results)
+                logger.info(f"   Trimmed from {len(combined_results)} to requested {requested_count} companies")
+            else:
+                logger.info(f"   Returning all {actual_count} companies (exactly what was requested)")
         
         # Use validated results instead of combined_results
         combined_results = validated_results
