@@ -294,11 +294,26 @@ export const apiService = {
         companies_returned: response.data?.results?.length || 0,
         requested: topK,
         companies_evaluated: response.data?.companies_evaluated || 0,
-        top_matches_analyzed: response.data?.top_matches_analyzed || 0
+        top_matches_analyzed: response.data?.top_matches_analyzed || 0,
+        has_results: !!response.data?.results,
+        response_keys: response.data ? Object.keys(response.data) : []
       });
       
+      // Check for errors in response
       if (response.status >= 400) {
-        throw new Error(response.data?.detail || 'Pipeline request failed');
+        const errorMsg = response.data?.detail || response.data?.message || 'Pipeline request failed';
+        console.error('❌ API Error:', errorMsg, response.data);
+        throw new Error(errorMsg);
+      }
+      
+      // Check if we got results
+      if (!response.data || !response.data.results) {
+        console.error('❌ No results in response:', response.data);
+        throw new Error('No results returned from server. Please check backend logs.');
+      }
+      
+      if (response.data.results.length === 0) {
+        console.warn('⚠️ Empty results array returned. Response:', response.data);
       }
       
       return response.data;
