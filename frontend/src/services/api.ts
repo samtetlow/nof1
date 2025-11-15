@@ -28,6 +28,7 @@ const api = axios.create({
 });
 
 // Set baseURL dynamically via request interceptor (runs on every request)
+// This ensures config.js has loaded before we use the API URL
 api.interceptors.request.use((config) => {
   // Get API URL dynamically on each request (ensures config.js has loaded)
   const apiUrl = getApiUrl();
@@ -42,13 +43,12 @@ api.interceptors.request.use((config) => {
           ? 'build-time (env var)' 
           : 'fallback (localhost)'
     );
+    console.log('🔍 window.APP_CONFIG:', typeof window !== 'undefined' ? (window as any).APP_CONFIG : 'N/A (SSR)');
     (api as any)._urlLogged = true;
   }
   
-  // Set baseURL if not already set (relative URLs)
-  if (!config.baseURL) {
-    config.baseURL = apiUrl;
-  }
+  // ALWAYS set baseURL from runtime config (overrides any default)
+  config.baseURL = apiUrl;
   
   return config;
 });

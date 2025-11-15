@@ -25,7 +25,14 @@
       Learn how to configure a non-root public URL by running `npm run build`.
     -->
     <title>N of 1</title>
-    <!-- Runtime configuration - loaded before React app -->
+    <!-- Runtime configuration - MUST load synchronously before React -->
+    <script>
+      // Inline config to ensure it loads immediately (no async loading)
+      window.APP_CONFIG = window.APP_CONFIG || {
+        API_URL: 'https://nof1-backend-jecb.onrender.com'
+      };
+    </script>
+    <!-- Fallback: Also load from external file if needed -->
     <script src="%PUBLIC_URL%/config.js"></script>
   </head>
   <body>
