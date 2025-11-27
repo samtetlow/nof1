@@ -29,6 +29,17 @@ from confirmation_engine import ConfirmationEngine, ConfirmationResult, Confirma
 from validation_engine import ValidationEngine, ValidationResult, ValidationLevel, RiskLevel
 from theme_search import ThemeBasedSearch
 
+# New imports for enhanced extraction
+import pdfplumber
+import pytesseract
+try:
+    from pdf2image import convert_from_path
+except ImportError:
+    convert_from_path = None
+from PIL import Image
+from dateutil import parser as date_parser
+from openai import OpenAI, AsyncOpenAI
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -80,6 +91,56 @@ def clean_company_name(company_name: str) -> str:
     cleaned = re.sub(f'({pattern})$', '', company_name, flags=re.IGNORECASE).strip()
     
     return cleaned
+
+def is_valid_website_url(website_url: Any) -> Tuple[bool, str]:
+    """
+    Comprehensive website URL validation helper function.
+    
+    Returns:
+        Tuple[bool, str]: (is_valid, error_message)
+        - is_valid: True if URL is valid, False otherwise
+        - error_message: Description of why URL is invalid (empty if valid)
+    """
+    # Check for None, empty, or whitespace
+    if not website_url:
+        return False, "Website URL is None or empty"
+    
+    website_url_str = str(website_url).strip()
+    
+    # Check for empty after strip
+    if not website_url_str:
+        return False, "Website URL is empty or whitespace only"
+    
+    # Check for invalid string values (None, null, N/A, etc. as strings)
+    invalid_values = ['none', 'null', 'nil', 'n/a', 'na', 'undefined', '']
+    if website_url_str.lower() in invalid_values:
+        return False, f"Website URL is invalid string value: '{website_url_str}'"
+    
+    # Minimum valid URL length check
+    if len(website_url_str) < 4:
+        return False, f"Website URL too short: '{website_url_str}'"
+    
+    # Check if URL looks like a valid domain (must contain at least one dot for TLD)
+    url_for_check = website_url_str.lower()
+    if url_for_check.startswith(('http://', 'https://')):
+        url_for_check = url_for_check.split('://', 1)[1]
+    # Remove path/query/fragment for domain check
+    url_for_check = url_for_check.split('/')[0].split('?')[0].split('#')[0]
+    
+    # Must have at least one dot and valid TLD (at least 2 chars)
+    if '.' not in url_for_check:
+        return False, f"Website URL doesn't contain a domain: '{website_url_str}'"
+    
+    tld = url_for_check.split('.')[-1]
+    if len(tld) < 2:
+        return False, f"Website URL has invalid TLD: '{website_url_str}'"
+    
+    # Additional check: domain part should not be empty
+    domain_parts = url_for_check.split('.')
+    if len(domain_parts) < 2 or not domain_parts[0]:
+        return False, f"Website URL has invalid domain format: '{website_url_str}'"
+    
+    return True, ""
 
 # --------------------------------------------------------------------------------------
 # Config / Storage
@@ -168,7 +229,9 @@ class CompanyORM(Base):
     duns = Column(String, nullable=True, index=True)
     cage_code = Column(String, nullable=True, index=True)
     naics_codes = Column(SA_JSON)              # list[str]
-    size = Column(String)                      # Small/Medium/Large
+    size = Column(String)                      # Small/Medium/Large (legacy field - size determined by employees)
+    employees = Column(Integer)                 # Employee headcount - used to determine size:
+                                                # Small business: ≤500 employees, Large business: >500 employees
     socioeconomic_status = Column(SA_JSON)     # list[str] e.g., ["8(a)","WOSB"]
     capabilities = Column(SA_JSON)             # list[str]
     certifications = Column(SA_JSON)           # list[str]
@@ -281,6 +344,188 @@ class MatchResult(BaseModel):
     recommendation: str
 
 # --------------------------------------------------------------------------------------
+# Enhanced Extraction Engines
+# --------------------------------------------------------------------------------------
+
+def extract_text_from_pdf_enhanced(file_path: str) -> str:
+    """
+    Extract text from PDF using pdfplumber with fallback to OCR.
+    Preserves table structures and layout where possible.
+    """
+    text_content = []
+    
+    try:
+        # Strategy 1: pdfplumber for text and tables
+        with pdfplumber.open(file_path) as pdf:
+            for page in pdf.pages:
+                # Try to extract tables first
+                tables = page.extract_tables()
+                if tables:
+                    for table in tables:
+                        # Convert table to markdown-like text
+                        row_strings = []
+                        for row in table:
+                            # Handle None cells
+                            cleaned_row = [str(cell).replace('\n', ' ') if cell else "" for cell in row]
+                            row_strings.append(" | ".join(cleaned_row))
+                        text_content.append("\n".join(row_strings))
+                
+                # Extract regular text
+                page_text = page.extract_text()
+                if page_text:
+                    text_content.append(page_text)
+        
+        full_text = "\n\n".join(text_content)
+        
+        # If text is too sparse, assume it's a scanned PDF and try OCR
+        # Only try if we have the library and the text is very short
+        if len(full_text.strip()) < 100 and convert_from_path:
+            logger.info("PDF text sparse, attempting OCR fallback...")
+            try:
+                images = convert_from_path(file_path)
+                ocr_text = []
+                for img in images:
+                    ocr_text.append(pytesseract.image_to_string(img))
+                full_text = "\n\n".join(ocr_text)
+            except Exception as ocr_e:
+                logger.warning(f"OCR fallback failed: {ocr_e}")
+            
+        return full_text
+
+    except Exception as e:
+        logger.error(f"Enhanced PDF extraction failed: {e}")
+        # Return empty string to let caller handle fallback
+        return ""
+
+def segment_solicitation_text(text: str) -> Dict[str, str]:
+    """
+    Split solicitation text into logical sections.
+    """
+    sections = {
+        "introduction": "",
+        "scope": "",
+        "requirements": "",
+        "evaluation": "",
+        "instructions": ""
+    }
+    
+    if not text:
+        return sections
+    
+    lines = text.split('\n')
+    current_section = "introduction"
+    buffer = []
+    
+    # Keywords that signal section changes
+    section_markers = {
+        "scope": ["scope of work", "statement of work", "performance work statement", "background", "objective", "c.1", "c.2"],
+        "requirements": ["requirements", "technical requirements", "tasks", "specific tasks", "deliverables", "c.3", "c.4"],
+        "evaluation": ["evaluation criteria", "basis of award", "evaluation factors", "selection criteria", "m.1", "m.2"],
+        "instructions": ["instructions to offerors", "submission instructions", "proposal preparation", "l.1", "l.2"]
+    }
+    
+    for line in lines:
+        # Check if line is a header
+        line_clean = line.strip().lower()
+        
+        # Heuristic: Headers are usually short
+        if len(line_clean) < 100 and len(line_clean) > 5:
+            found_new_section = False
+            for section, markers in section_markers.items():
+                if any(marker in line_clean for marker in markers):
+                    # Save buffer to current section
+                    sections[current_section] += "\n".join(buffer) + "\n"
+                    buffer = []
+                    current_section = section
+                    found_new_section = True
+                    break
+            if found_new_section:
+                buffer.append(line) # Add header to new section
+                continue
+        
+        buffer.append(line)
+        
+    # Flush last buffer
+    sections[current_section] += "\n".join(buffer)
+    
+    return sections
+
+def extract_dates_enhanced(text: str) -> Dict[str, Any]:
+    """
+    Extract critical dates using pattern matching and dateutil.
+    """
+    dates = {
+        "due_date": None,
+        "questions_due": None
+    }
+    
+    # Pattern for due dates
+    due_patterns = [
+        r"(?:responses?|proposals?|quotes?|offers?)\s+(?:due|must\s+be\s+received)(?:\s+by|\s+on)?\s+([A-Za-z0-9,\s:]+)",
+        r"(?:due|closing|deadline)\s+(?:date|time)?[:\s]+([A-Za-z0-9,\s:]+)"
+    ]
+    
+    for pattern in due_patterns:
+        matches = re.finditer(pattern, text, re.I)
+        for match in matches:
+            date_str = match.group(1)[:50].strip() # Limit length
+            try:
+                # Fuzzy parse
+                dt = date_parser.parse(date_str, fuzzy=True)
+                # Sanity check: date should be in future or recent past (not 1900s)
+                if dt.year > 2020:
+                    dates["due_date"] = dt
+                    break
+            except:
+                continue
+        if dates["due_date"]:
+            break
+            
+    return dates
+
+async def analyze_with_llm(text: str) -> Optional[Dict[str, Any]]:
+    """
+    Use LLM to extract sophisticated insights if API key is available.
+    """
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+
+    try:
+        client = AsyncOpenAI(api_key=api_key)
+        
+        # Truncate text for token limits (approx 10k chars)
+        trunc_text = text[:12000]
+        
+        prompt = f"""
+        Analyze this government solicitation and extract the following in JSON format:
+        1. "problem_statement": The core problem the agency is trying to solve (1-2 sentences).
+        2. "scope_summary": Brief summary of the scope of work.
+        3. "technical_requirements": List of key technical capabilities required.
+        4. "evaluation_criteria": List of primary factors for award (e.g., Technical, Past Performance, Price).
+        5. "risks": Potential risks or challenges mentioned.
+        6. "key_dates": Any specific dates mentioned.
+        
+        Solicitation Text:
+        {trunc_text}
+        """
+        
+        response = await client.chat.completions.create(
+            model="gpt-4-turbo-preview",
+            messages=[
+                {"role": "system", "content": "You are a government contracting expert assistant. Output valid JSON only."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"}
+        )
+        
+        return json.loads(response.choices[0].message.content)
+        
+    except Exception as e:
+        logger.error(f"LLM analysis failed: {e}")
+        return None
+
+# --------------------------------------------------------------------------------------
 # Lightweight Solicitation Parser (deterministic extractors)
 # --------------------------------------------------------------------------------------
 NAICS_RX = re.compile(r"\b(5415[1-9]\d?|54\d{3}|3364\d|334\d{2}|6114\d|6211\d|6221\d)\b")
@@ -363,7 +608,7 @@ Return ONLY valid JSON with no additional text or markdown."""
 def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
     """
     Analyze solicitation to extract key topics and priorities.
-    Prioritizes PROBLEM AREAS as the primary driver, using semantic importance over mention counts.
+    Uses Hybrid approach: LLM if available, otherwise enhanced heuristic extraction.
     """
     if not text or len(text.strip()) < 100:
         logger.warning("Insufficient text for theme analysis")
@@ -375,21 +620,97 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
             "evaluation_factors": [],
             "search_keywords": []
         }
-    
-    # Extract key themes and priorities
+
+    # Strategy 1: Comprehensive LLM Extraction (if key available)
+    # This extracts structured data directly, skipping regex if successful
+    api_key = os.getenv("OPENAI_API_KEY")
+    if api_key:
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+            
+            # Truncate text for token limits (approx 12k chars)
+            trunc_text = text[:12000]
+            
+            prompt = f"""
+            Analyze this government solicitation and extract the following in JSON format:
+            1. "problem_statement": The core problem the agency is trying to solve (1-2 sentences).
+            2. "problem_areas": List of 3-5 specific pain points or challenges.
+            3. "key_priorities": List of 3-5 mandatory requirements or critical success factors.
+            4. "technical_capabilities": List of key technical domains/skills required.
+            5. "evaluation_factors": List of criteria used to evaluate proposals.
+            6. "search_keywords": List of 10-15 keywords to find capable vendors.
+            7. "overview": A brief 2-3 sentence executive summary.
+            8. "key_takeaways": Top 3 most important things a bidder should know.
+            
+            Solicitation Text:
+            {trunc_text}
+            """
+            
+            response = client.chat.completions.create(
+                model="gpt-4-turbo-preview",
+                messages=[
+                    {"role": "system", "content": "You are a government contracting expert. Return valid JSON only."},
+                    {"role": "user", "content": prompt}
+                ],
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            
+            # Normalize result to ensure lists are lists of strings
+            def norm_list(l):
+                if isinstance(l, list):
+                    if l and isinstance(l[0], dict):
+                        return [str(list(x.values())[0]) for x in l]
+                    return [str(x) for x in l]
+                return []
+                
+            themes = {
+                "problem_statement": result.get("problem_statement", ""),
+                "problem_areas": norm_list(result.get("problem_areas", [])),
+                "key_priorities": norm_list(result.get("key_priorities", [])),
+                "technical_capabilities": [], 
+                "evaluation_factors": norm_list(result.get("evaluation_factors", [])),
+                "search_keywords": norm_list(result.get("search_keywords", [])),
+                "overview": result.get("overview", ""),
+                "key_takeaways": norm_list(result.get("key_takeaways", []))
+            }
+            
+            # Convert technical_capabilities to dict structure expected by UI
+            raw_caps = norm_list(result.get("technical_capabilities", []))
+            themes["technical_capabilities"] = [
+                {"area": c, "relevance": "high"} for c in raw_caps
+            ]
+            
+            logger.info("Successfully extracted themes via LLM")
+            return themes
+            
+        except Exception as e:
+            logger.warning(f"LLM analysis failed, falling back to heuristics: {e}")
+            # Fall through to heuristic strategy
+            
+    # Strategy 2: Enhanced Heuristic Extraction (Fallback)
     themes = {
-        "overview": "",  # Executive summary of the solicitation
-        "key_takeaways": [],  # Top 3-5 salient points for quick understanding
-        "problem_statement": "",  # The core problem to solve
-        "problem_areas": [],  # Specific pain points (HIGHEST PRIORITY)
-        "key_priorities": [],  # Must-have requirements
-        "technical_capabilities": [],  # Technical skills needed (derived from problems)
-        "evaluation_factors": [],  # How proposals will be judged
-        "search_keywords": []  # Keywords for company search
+        "overview": "",
+        "key_takeaways": [],
+        "problem_statement": "",
+        "problem_areas": [],
+        "key_priorities": [],
+        "technical_capabilities": [],
+        "evaluation_factors": [],
+        "search_keywords": []
     }
     
-    # === STEP 1: IDENTIFY THE CORE PROBLEM (Most Important) ===
-    # Look for problem statements, needs, and challenges
+    # Segment text for better targeting
+    sections = segment_solicitation_text(text)
+    
+    # Focus extraction on relevant sections
+    intro_text = sections["introduction"] + "\n" + sections["scope"]
+    req_text = sections["requirements"] + "\n" + sections["scope"]
+    eval_text = sections["evaluation"]
+    
+    # === STEP 1: IDENTIFY THE CORE PROBLEM (Intro/Scope) ===
     problem_statement_patterns = [
         r"(?:the\s+)?(?:challenge|problem|issue|need)\s+is\s+([^.]{30,200})",
         r"(?:seeking|looking for|need)\s+(?:a\s+)?(?:solution|approach|system|capability|contractor|vendor)\s+(?:to|that|for)\s+([^.]{30,200})",
@@ -397,103 +718,72 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
         r"in\s+order\s+to\s+address\s+([^.]{30,200})",
     ]
     
-    problem_statement = ""
     for pattern in problem_statement_patterns:
-        match = re.search(pattern, text, re.I)
+        match = re.search(pattern, intro_text, re.I)
         if match:
-            problem_statement = re.sub(r'\s+', ' ', match.group(1)).strip()
-            if len(problem_statement) > 30:
-                themes["problem_statement"] = problem_statement
-                break
-    
-    # === STEP 2: EXTRACT SPECIFIC PROBLEM AREAS (Critical for Search) ===
-    # These drive what companies we look for
+            themes["problem_statement"] = re.sub(r'\s+', ' ', match.group(1)).strip()
+            break
+            
+    # === STEP 2: EXTRACT SPECIFIC PROBLEM AREAS ===
     problem_patterns = [
-        # Explicit problems
-        (r"(?:challenge|problem|issue|difficulty|barrier|obstacle)\s+(?:is|with|of|in|includes?|involves?)\s+([^.;]{25,150})", 1.0),
-        # Gaps and deficiencies  
-        (r"(?:lack(?:s|ing)?|insufficient|inadequate|limited|missing|absent|without)\s+([^.;]{15,120})", 0.95),
-        # Needs and requirements
-        (r"(?:need(?:s|ed)?|require(?:s|d|ment)?|must\s+have|essential|critical(?:ly)?)\s+(?:for|to|that)?\s*([^.;]{20,120})", 0.9),
-        # Current state problems
-        (r"(?:current|existing|legacy|outdated|aging)\s+(?:system|solution|infrastructure|approach|method|process)\s+(?:is|has|lacks?|cannot|fails?)\s+([^.;]{20,120})", 0.85),
-        # Risk and vulnerability language
-        (r"(?:risk|vulnerability|threat|concern|weakness|exposure)\s+(?:of|from|in|with|regarding)\s+([^.;]{20,120})", 0.8),
+        (r"(?:challenge|problem|issue|difficulty)\s+(?:is|with|of|in)\s+([^.;]{25,150})", 1.0),
+        (r"(?:lack(?:s|ing)?|insufficient|inadequate|missing)\s+([^.;]{15,120})", 0.95),
+        (r"(?:need|require)\s+(?:to|that)\s+([^.;]{20,120})", 0.9),
     ]
     
     problem_extractions = []
-    for pattern, importance_score in problem_patterns:
-        matches = re.findall(pattern, text, re.I)
-        for match in matches[:5]:  # Top 5 per pattern
-            cleaned = re.sub(r'\s+', ' ', match).strip()
-            if len(cleaned) >= 20 and cleaned.lower() not in [p["text"].lower() for p in problem_extractions]:
-                problem_extractions.append({
-                    "text": cleaned,
-                    "importance": importance_score,
-                    "type": "problem"
-                })
+    for pattern, score in problem_patterns:
+        matches = re.findall(pattern, intro_text, re.I)
+        for m in matches[:5]:
+            cleaned = re.sub(r'\s+', ' ', m).strip()
+            if len(cleaned) >= 20:
+                problem_extractions.append({"text": cleaned, "score": score})
     
-    # Sort by importance, not just frequency
-    problem_extractions.sort(key=lambda x: x["importance"], reverse=True)
-    themes["problem_areas"] = [p["text"] for p in problem_extractions[:8]]
-    
-    # FALLBACK: If no problem areas found, extract key noun phrases from first 1000 chars
-    if len(themes["problem_areas"]) == 0:
-        logger.warning("No problem areas extracted via patterns, using fallback extraction")
-        # Extract sentences or phrases with technical or domain terms
-        sentences = re.split(r'[.!?;\n]', text[:1200])
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if len(sentence) > 30 and len(sentence) < 250:
-                # Look for sentences with technical indicators or domain-specific terms
-                if re.search(r'\b(system|technology|solution|service|capability|development|monitoring|detection|management|platform|biosensor|vaccine|diagnostic|iot|automated|data|surveillance|pathogen|disease|security|cloud|software|hardware)\b', sentence, re.I):
-                    themes["problem_areas"].append(sentence)
-                    logger.info(f"Fallback extracted: {sentence[:80]}...")
-                    if len(themes["problem_areas"]) >= 6:
-                        break
-    
-    # === STEP 3: KEY PRIORITIES (Must-haves) ===
+    themes["problem_areas"] = [p["text"] for p in sorted(problem_extractions, key=lambda x: x["score"], reverse=True)[:8]]
+
+    # === STEP 3: PRIORITIES (Requirements) ===
     priority_patterns = [
-        (r"(?:must|shall|required?\s+to|mandatory|critical\s+to)\s+([^.;]{20,120})", 1.0),
-        (r"(?:priority|essential|crucial|vital|necessary|imperative)\s+(?:is|that|to|for)\s+([^.;]{20,120})", 0.9),
-        (r"(?:requirement|stipulation|condition)\s+(?:is|that|for)\s+([^.;]{20,120})", 0.85),
+        r"(?:must|shall|required\s+to|mandatory)\s+([^.;]{20,120})",
+        r"(?:priority|essential|critical)\s+(?:is|to)\s+([^.;]{20,120})",
     ]
     
-    priority_extractions = []
-    for pattern, importance_score in priority_patterns:
-        matches = re.findall(pattern, text, re.I)
-        for match in matches[:4]:
-            cleaned = re.sub(r'\s+', ' ', match).strip()
-            if len(cleaned) >= 20 and cleaned.lower() not in [p["text"].lower() for p in priority_extractions]:
-                priority_extractions.append({
-                    "text": cleaned,
-                    "importance": importance_score
-                })
+    priorities = []
+    for pattern in priority_patterns:
+        matches = re.findall(pattern, req_text, re.I)
+        for m in matches[:5]:
+            cleaned = re.sub(r'\s+', ' ', m).strip()
+            if len(cleaned) >= 20:
+                priorities.append(cleaned)
+    themes["key_priorities"] = list(set(priorities))[:8]
     
-    priority_extractions.sort(key=lambda x: x["importance"], reverse=True)
-    themes["key_priorities"] = [p["text"] for p in priority_extractions[:8]]
+    # === STEP 4: EVALUATION FACTORS (Evaluation) ===
+    target_text = eval_text if len(eval_text) > 100 else text
+    eval_patterns = [
+        r"(?:evaluat|assess|judg|score)\s+(?:based on|factors?|criteria)\s+([^.;]{20,120})",
+        r"(?:factor|criterion)\s+(?:include|are)\s+([^.;]{20,120})",
+    ]
     
-    # === STEP 5: TECHNICAL CAPABILITIES (Derived from problems and priorities) ===
-    # Comprehensive patterns across multiple domains
+    evals = []
+    for pattern in eval_patterns:
+        matches = re.findall(pattern, target_text, re.I)
+        for m in matches[:5]:
+            cleaned = re.sub(r'\s+', ' ', m).strip()
+            if len(cleaned) >= 10:
+                evals.append(cleaned)
+    themes["evaluation_factors"] = list(set(evals))[:6]
+    
+    # === STEP 5: TECHNICAL CAPABILITIES ===
+    # Reuse comprehensive patterns from original logic
     capability_patterns = {
-        # Agriculture & Animal Health
         "agriculture & animal health": r"\b(agricultur|farm|livestock|poultry|animal health|veterinary|biosecurity|disease surveillance|avian|cattle|swine|aquaculture|crop)\b",
         "biosensors & diagnostics": r"\b(biosensor|diagnostic|pathogen detection|lab|testing|screening|assay|biomarker|detection system)\b",
         "vaccine & therapeutics": r"\b(vaccine|vaccination|immunization|therapeutic|drug|pharmaceutical|cold[- ]chain|biologics)\b",
-        
-        # Healthcare & Biotech
         "healthcare & medical": r"\b(healthcare|medical|hospital|clinical|patient|health system|telemedicine|ehr|medical device)\b",
         "biotechnology": r"\b(biotech|genetic|genomic|molecular|dna|rna|crispr|gene therapy|biomanufacturing)\b",
-        
-        # Manufacturing & Supply Chain
         "manufacturing & production": r"\b(manufactur|production|assembly|fabrication|quality control|supply chain|logistics|warehouse)\b",
         "automation & robotics": r"\b(automat|robot|industrial control|plc|scada|process control|iot|sensor)\b",
-        
-        # Energy & Environment
         "energy & utilities": r"\b(energy|power|electric|solar|wind|renewable|grid|utility|transmission)\b",
         "environmental": r"\b(environmental|sustainability|climate|emission|waste|water treatment|pollution)\b",
-        
-        # IT & Cybersecurity (keep but lower priority)
         "cloud & infrastructure": r"\b(cloud|aws|azure|gcp|kubernetes|docker|container|infrastructure|iaas|paas|saas)\b",
         "cybersecurity": r"\b(cybersecurity|security|encryption|authentication|zero trust|siem|soar|threat)\b",
         "data & analytics": r"\b(data analytics|business intelligence|machine learning|ai|predictive|big data)\b",
@@ -502,26 +792,9 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
     
     capability_matches = []
     for capability, pattern in capability_patterns.items():
-        # Find matches and their context (nearby problem/priority language)
         matches = list(re.finditer(pattern, text, re.I))
         if matches:
-            # Calculate contextual importance (is it near problem language?)
-            problem_words = r"\b(problem|challenge|need|require|must|critical|essential|lack|insufficient)\b"
-            
-            context_score = 0
-            for match in matches:
-                start = max(0, match.start() - 200)
-                end = min(len(text), match.end() + 200)
-                context = text[start:end]
-                context_matches = len(re.findall(problem_words, context, re.I))
-                context_score += context_matches
-            
-            # Importance = (number of matches) * (context score) * (early position bonus)
-            first_match_pos = matches[0].start() / len(text)  # 0-1, earlier is better
-            position_bonus = 1.2 if first_match_pos < 0.3 else 1.0  # First 30% of document
-            
-            importance = len(matches) * (1 + context_score * 0.5) * position_bonus
-            
+            importance = len(matches)
             capability_matches.append({
                 "capability": capability,
                 "importance": importance,
@@ -533,248 +806,28 @@ def analyze_solicitation_themes(text: str) -> Dict[str, Any]:
         {"area": c["capability"], "relevance": "high" if c["importance"] > 10 else "medium"}
         for c in capability_matches[:6]
     ]
+
+    # Keywords
+    themes["search_keywords"] = [c["area"].replace(" & ", " ").replace(" ", "_") for c in themes["technical_capabilities"]] + [w.split()[0] for w in themes["evaluation_factors"]]
     
-    # === STEP 6: EVALUATION FACTORS ===
-    eval_patterns = [
-        r"(?:evaluat|assess|judg|score|rate)\s+(?:based on|on|using|by)\s+([^.;]{20,120})",
-        r"(?:factor|criterion|criteria)\s+(?:include|are|is)\s+([^.;]{20,120})",
-        r"(?:past performance|experience|technical approach|management plan|key personnel)\s+(?:in|with|on|will be)\s+([^.;]{20,100})",
-    ]
-    
-    for pattern in eval_patterns:
-        matches = re.findall(pattern, text, re.I)
-        for match in matches[:3]:
-            cleaned = re.sub(r'\s+', ' ', match).strip()
-            if len(cleaned) >= 20 and cleaned not in themes["evaluation_factors"]:
-                themes["evaluation_factors"].append(cleaned)
-    
-    themes["evaluation_factors"] = themes["evaluation_factors"][:6]
-    
-    # === STEP 7: GENERATE SEARCH KEYWORDS ===
-    # Derive keywords from problems + capabilities (not just frequency)
-    search_keywords = []
-    
-    # Extract nouns and technical terms from problem areas
-    for problem in themes["problem_areas"][:4]:
-        words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9\-]{3,}\b', problem.lower())
-        search_keywords.extend(words[:5])
-    
-    # Add capability keywords
-    for cap in themes["technical_capabilities"]:
-        search_keywords.append(cap["area"].replace(" & ", " ").replace(" ", "_"))
-    
-    # Add domain-specific terms from priorities
-    for priority in themes["key_priorities"][:3]:
-        words = re.findall(r'\b[a-zA-Z][a-zA-Z0-9\-]{4,}\b', priority.lower())
-        search_keywords.extend(words[:3])
-    
-    # Deduplicate and filter stop words
-    stop_words = {
-        "the", "and", "for", "with", "that", "this", "from", "shall", "will",
-        "must", "have", "are", "was", "were", "has", "had", "system", "solution"
-    }
-    search_keywords = list(set([kw for kw in search_keywords if kw not in stop_words]))[:20]
-    themes["search_keywords"] = search_keywords
-    
-    # === STEP 8: GENERATE OVERVIEW & KEY TOPICS ===
-    # Try AI-powered summary first for best quality
+    # === STEP 6: GENERATE OVERVIEW & KEY TOPICS ===
+    # Try AI-powered summary first (using existing helper)
     ai_summary = generate_ai_summary(text)
     
     if ai_summary and "summary" in ai_summary and "key_topics" in ai_summary:
-        # Use AI-generated summary (clean and grammatically correct)
         themes["overview"] = ai_summary["summary"]
-        themes["key_takeaways"] = ai_summary["key_topics"][:6]  # Limit to 6 topics
-        logger.info("Using AI-generated summary and topics")
+        themes["key_takeaways"] = ai_summary["key_topics"][:6]
     else:
-        # Fallback to manual extraction if AI is unavailable
-        logger.info("Using fallback manual summary extraction")
-        
-        # Create detailed paragraph summary (3-5 sentences)
+        # Fallback manual summary
         summary_parts = []
-        
-        # Helper to extract complete, grammatical phrases
-        def extract_clean_phrase(text: str, max_chars: int = 150) -> str:
-            """Extract a clean phrase without cutting mid-word or leaving fragments"""
-            if not text or len(text) <= max_chars:
-                return text.strip()
-            
-            # Truncate at max_chars
-            truncated = text[:max_chars].strip()
-            
-            # Find the last complete word
-            last_space = truncated.rfind(' ')
-            if last_space > max_chars * 0.7:  # Only if we're not losing too much
-                truncated = truncated[:last_space].strip()
-            
-            # Remove trailing incomplete punctuation or conjunctions
-            while truncated and truncated[-1] in ',;:-()':
-                truncated = truncated[:-1].strip()
-            
-            # Remove trailing conjunctions
-            trailing_words = ['and', 'or', 'but', 'for', 'with', 'to', 'of', 'in', 'on', 'at', 'by']
-            words = truncated.split()
-            if words and words[-1].lower() in trailing_words:
-                truncated = ' '.join(words[:-1])
-            
-            return truncated.strip()
-        
-        # Sentence 1: What is this solicitation about? (Core problem/need)
         if themes["problem_statement"]:
-            clean_stmt = extract_clean_phrase(themes["problem_statement"], 200)
-            summary_parts.append(clean_stmt)
-        elif themes["problem_areas"]:
-            clean_problem = extract_clean_phrase(themes['problem_areas'][0], 150)
-            if clean_problem:
-                summary_parts.append(f"This solicitation seeks innovative solutions to {clean_problem.lower()}")
-        else:
-            # Extract first substantial sentence from text
-            sentences = [s.strip() for s in re.split(r'[.!?]', text[:800]) if len(s.strip()) > 40]
-            if sentences:
-                summary_parts.append(extract_clean_phrase(sentences[0], 200))
-        
-        # Sentence 2: Technical capabilities and expertise needed
+            summary_parts.append(f"This solicitation addresses: {themes['problem_statement']}")
         if themes["technical_capabilities"]:
-            if len(themes["technical_capabilities"]) >= 3:
-                cap_names = [cap["area"] for cap in themes["technical_capabilities"][:3]]
-                summary_parts.append(f"The program requires expertise in {', '.join(cap_names[:-1])}, and {cap_names[-1]}")
-            elif len(themes["technical_capabilities"]) == 2:
-                cap_names = [cap["area"] for cap in themes["technical_capabilities"][:2]]
-                summary_parts.append(f"The program requires expertise in {cap_names[0]} and {cap_names[1]}")
-            else:
-                summary_parts.append(f"The program requires expertise in {themes['technical_capabilities'][0]['area']}")
-        
-        # Sentence 3: Key priorities or requirements  
-        if themes["key_priorities"]:
-            clean_priority = extract_clean_phrase(themes["key_priorities"][0], 150)
-            if clean_priority:
-                summary_parts.append(f"Critical requirements include {clean_priority.lower()}")
-        
-        # Sentence 4: Additional context from second problem area or priority
-        if len(themes["problem_areas"]) > 1:
-            clean_second = extract_clean_phrase(themes["problem_areas"][1], 120)
-            if clean_second:
-                summary_parts.append(f"The solicitation also emphasizes {clean_second.lower()}")
-        elif len(themes["key_priorities"]) > 1:
-            clean_second_priority = extract_clean_phrase(themes["key_priorities"][1], 120)
-            if clean_second_priority:
-                summary_parts.append(f"Additionally, the program prioritizes {clean_second_priority.lower()}")
-        
-        # Join sentences properly
-        formatted_summary = []
-        for part in summary_parts:
-            part = part.strip()
-            if part:
-                # Ensure proper capitalization
-                if part[0].islower():
-                    part = part[0].upper() + part[1:]
-                # Ensure proper ending
-                if part[-1] not in '.!?':
-                    part += '.'
-                formatted_summary.append(part)
-        
-        themes["overview"] = " ".join(formatted_summary) if formatted_summary else extract_clean_phrase(text, 400) + "."
-        
-        # Generate Key Topics for fallback (only if AI didn't provide them)
-        key_topics = []
-        
-        def ensure_complete_sentence(text: str) -> str:
-            """Ensure the topic is a complete, standalone sentence"""
-            text = text.strip()
+            caps = [c["area"] for c in themes["technical_capabilities"][:3]]
+            summary_parts.append(f"Key capabilities needed: {', '.join(caps)}.")
             
-            # Check if it starts with a capital letter
-            if text and not text[0].isupper():
-                text = text[0].upper() + text[1:]
-            
-            # Check if it ends with proper punctuation
-            if text and text[-1] not in '.!?':
-                text = text + '.'
-            
-            # Check if it has a subject and verb (basic check)
-            # If it starts with a gerund or noun without context, add a subject
-            words = text.split()
-            if len(words) > 0:
-                first_word = words[0].lower()
-                # If starts with -ing or is a noun phrase without "the/this/these", make it complete
-                if first_word.endswith('ing') and len(words) > 2:
-                    # Check if there's no clear subject
-                    if not any(w.lower() in ['the', 'this', 'these', 'those', 'program', 'solicitation', 'project'] for w in words[:3]):
-                        text = f"The program requires {text[0].lower()}{text[1:]}"
-            
-            return text
-        
-        # Topic 1: Primary Technical Domain - Detailed description with focus areas
-        if themes["technical_capabilities"]:
-            cap = themes["technical_capabilities"][0]
-            cap_name = cap["area"]
-            focus_terms = cap.get("terms", [])[:4]
-            if focus_terms:
-                topic = f"The program requires {cap_name.lower()} expertise with emphasis on {', '.join(focus_terms)}, and related technical capabilities essential for success"
-            else:
-                topic = f"The solicitation requires {cap_name.lower()} capabilities as the primary technical foundation, including relevant tools, methodologies, and proven experience"
-            key_topics.append(ensure_complete_sentence(topic))
-        
-        # Topic 2: Core Problem/Challenge - Full problem statement
-        if themes["problem_areas"]:
-            problem = themes["problem_areas"][0]
-            # Provide full context without truncation for better understanding
-            if len(problem) > 150:
-                topic = f"The central challenge this solicitation aims to address is {problem[:150].lower()}"
-            else:
-                # Check if problem already forms a complete sentence
-                if problem[0].isupper() and problem[-1] in '.!?':
-                    topic = f"The core technical challenge is: {problem}"
-                else:
-                    topic = f"This solicitation addresses {problem.lower()} as the core technical challenge that requires innovative solutions"
-            key_topics.append(ensure_complete_sentence(topic))
-        
-        # Topic 3: Critical Requirements - Expanded priority description
-        if themes["key_priorities"]:
-            priority = themes["key_priorities"][0]
-            # Add context about why this is critical
-            if "must" in priority.lower() or "shall" in priority.lower() or "required" in priority.lower():
-                topic = f"A mandatory program requirement is to {priority.lower()}" if not priority[0].isupper() else priority
-            else:
-                topic = f"The program prioritizes {priority.lower()} as a critical success factor" if not priority[0].isupper() else priority
-            key_topics.append(ensure_complete_sentence(topic))
-        
-        # Topic 4: Secondary Technical Domain - Include complementary capabilities
-        if len(themes["technical_capabilities"]) > 1:
-            cap2 = themes["technical_capabilities"][1]
-            cap2_name = cap2["area"]
-            focus_terms2 = cap2.get("terms", [])[:3]
-            if focus_terms2:
-                topic = f"Complementary {cap2_name.lower()} capabilities are needed, including {', '.join(focus_terms2)}, to support integrated solution development"
-            else:
-                topic = f"Additional technical expertise in {cap2_name.lower()} serves as a supporting capability that enhances overall solution effectiveness"
-            key_topics.append(ensure_complete_sentence(topic))
-        
-        # Topic 5: Secondary Problem Area - Additional challenge context
-        if len(themes["problem_areas"]) > 1:
-            problem2 = themes["problem_areas"][1]
-            topic = f"An important secondary consideration is {problem2.lower()}, which impacts overall program objectives"
-            key_topics.append(ensure_complete_sentence(topic))
-        
-        # Topic 6: Additional Priority - Third-tier requirements
-        if len(themes["key_priorities"]) > 1:
-            priority2 = themes["key_priorities"][1]
-            topic = f"The solicitation also emphasizes {priority2.lower()}, providing additional program direction and evaluation criteria"
-            key_topics.append(ensure_complete_sentence(topic))
-        
-        # Topic 7: Evaluation Criteria - How proposals are assessed (if not already covered)
-        if themes["evaluation_factors"] and len(key_topics) < 6:
-            eval_factor = themes["evaluation_factors"][0]
-            topic = f"Proposals will be evaluated based on {eval_factor.lower()}, demonstrating the importance of this criterion in the selection process"
-            key_topics.append(ensure_complete_sentence(topic))
-        
-        # Topic 8: Third technical capability (if available and space permits)
-        if len(themes["technical_capabilities"]) > 2 and len(key_topics) < 6:
-            cap3 = themes["technical_capabilities"][2]
-            cap3_name = cap3["area"]
-            topic = f"Tertiary expertise in {cap3_name.lower()} may provide competitive advantages and contribute to comprehensive solution delivery"
-            key_topics.append(ensure_complete_sentence(topic))
-        
-        # Set key_takeaways in fallback mode (AI didn't generate them)
-        themes["key_takeaways"] = key_topics[:6]  # Max 6 key topics
+        themes["overview"] = " ".join(summary_parts)
+        themes["key_takeaways"] = themes["problem_areas"][:3] + themes["key_priorities"][:3]
     
     return themes
 
@@ -951,6 +1004,9 @@ def parse_solicitation_text(text: str) -> Dict[str, Any]:
     common = sorted(freq.items(), key=lambda x: x[1], reverse=True)[:50]
     keywords = [w for w, count in common if w not in stop_words and count >= 2][:25]
 
+    # Extract dates
+    extracted_dates = extract_dates_enhanced(text)
+
     return {
         "solicitation_id": solicitation_id,
         "title": title,
@@ -960,6 +1016,7 @@ def parse_solicitation_text(text: str) -> Dict[str, Any]:
         "security_clearance": clearance,
         "required_capabilities": required_capabilities[:15],  # Top 15
         "keywords": keywords,
+        "due_date": extracted_dates.get("due_date"),
         "raw_text": text,  # Keep original text
     }
 
@@ -971,6 +1028,34 @@ class MatchingEngine:
         self.weights = weights or load_weights()
         # Fail-fast caps for hard requirements
         self.hard_caps = {"set_aside": 0.49, "clearance": 0.49}
+        
+        # State abbreviations mapping for location matching
+        self.state_abbrevs = {
+            "alabama": "al", "alaska": "ak", "arizona": "az", "arkansas": "ar",
+            "california": "ca", "colorado": "co", "connecticut": "ct", "delaware": "de",
+            "florida": "fl", "georgia": "ga", "hawaii": "hi", "idaho": "id",
+            "illinois": "il", "indiana": "in", "iowa": "ia", "kansas": "ks",
+            "kentucky": "ky", "louisiana": "la", "maine": "me", "maryland": "md",
+            "massachusetts": "ma", "michigan": "mi", "minnesota": "mn", "mississippi": "ms",
+            "missouri": "mo", "montana": "mt", "nebraska": "ne", "nevada": "nv",
+            "new hampshire": "nh", "new jersey": "nj", "new mexico": "nm", "new york": "ny",
+            "north carolina": "nc", "north dakota": "nd", "ohio": "oh", "oklahoma": "ok",
+            "oregon": "or", "pennsylvania": "pa", "rhode island": "ri", "south carolina": "sc",
+            "south dakota": "sd", "tennessee": "tn", "texas": "tx", "utah": "ut",
+            "vermont": "vt", "virginia": "va", "washington": "wa", "west virginia": "wv",
+            "wisconsin": "wi", "wyoming": "wy", "district of columbia": "dc", "washington dc": "dc"
+        }
+        
+        # Common term variations for semantic matching
+        self.term_variations = {
+            "cloud": ["cloud computing", "cloud services", "cloud infrastructure", "aws", "azure", "gcp"],
+            "cybersecurity": ["cyber security", "information security", "infosec", "security"],
+            "ai": ["artificial intelligence", "machine learning", "ml", "deep learning"],
+            "software": ["application", "app", "system", "platform"],
+            "data": ["analytics", "big data", "data science", "data engineering"],
+            "network": ["networking", "infrastructure", "systems"],
+            "development": ["engineering", "implementation", "deployment"],
+        }
 
     @staticmethod
     def _norm(s: Optional[str]) -> str:
@@ -979,6 +1064,98 @@ class MatchingEngine:
     @staticmethod
     def _list_norm(lst: Optional[List[str]]) -> List[str]:
         return [MatchingEngine._norm(x) for x in (lst or []) if x]
+
+    def _fuzzy_match(self, term1: str, term2: str) -> float:
+        """Calculate fuzzy match score between two terms (0.0 to 1.0)"""
+        term1 = self._norm(term1)
+        term2 = self._norm(term2)
+        
+        # Exact match
+        if term1 == term2:
+            return 1.0
+        
+        # Substring match (one contains the other)
+        if term1 in term2 or term2 in term1:
+            shorter = min(len(term1), len(term2))
+            longer = max(len(term1), len(term2))
+            return 0.7 * (shorter / longer)  # Partial credit based on overlap
+        
+        # Word overlap (for multi-word terms)
+        words1 = set(term1.split())
+        words2 = set(term2.split())
+        if words1 and words2:
+            overlap = len(words1 & words2)
+            union = len(words1 | words2)
+            if overlap > 0:
+                return 0.5 * (overlap / union)  # Jaccard similarity
+        
+        # Check term variations
+        for base_term, variations in self.term_variations.items():
+            if base_term in term1 or any(v in term1 for v in variations):
+                if base_term in term2 or any(v in term2 for v in variations):
+                    return 0.6
+        
+        return 0.0
+
+    def _semantic_match_set(self, required_set: set, available_set: set, threshold: float = 0.5) -> Tuple[int, float]:
+        """Match sets with semantic/fuzzy matching. Returns (exact_matches, fuzzy_score)"""
+        exact_matches = len(required_set & available_set)
+        fuzzy_score = 0.0
+        
+        remaining_required = required_set - available_set
+        remaining_available = available_set - required_set
+        
+        # Try fuzzy matching for remaining items
+        for req_term in remaining_required:
+            best_match = 0.0
+            for avail_term in remaining_available:
+                match_score = self._fuzzy_match(req_term, avail_term)
+                if match_score > best_match:
+                    best_match = match_score
+            if best_match >= threshold:
+                fuzzy_score += best_match
+        
+        return exact_matches, fuzzy_score
+
+    def _extract_words_from_text(self, text: str) -> Dict[str, int]:
+        """Extract words from text with frequency (simple TF-like weighting)"""
+        if not text:
+            return {}
+        words = re.findall(r"[a-zA-Z][a-zA-Z0-9\-]{2,}", text.lower())
+        freq: Dict[str, int] = {}
+        for w in words:
+            freq[w] = freq.get(w, 0) + 1
+        return freq
+
+    def _text_similarity(self, text1: str, text2: str) -> float:
+        """Calculate text similarity using word overlap and frequency"""
+        if not text1 or not text2:
+            return 0.0
+        
+        words1 = self._extract_words_from_text(text1)
+        words2 = self._extract_words_from_text(text2)
+        
+        if not words1 or not words2:
+            return 0.0
+        
+        # Calculate weighted overlap (TF-like)
+        common_words = set(words1.keys()) & set(words2.keys())
+        if not common_words:
+            return 0.0
+        
+        # Weight by frequency in both texts
+        total_weight = 0.0
+        max_weight = 0.0
+        
+        all_words = set(words1.keys()) | set(words2.keys())
+        for word in all_words:
+            w1 = words1.get(word, 0)
+            w2 = words2.get(word, 0)
+            max_weight += max(w1, w2)
+            if word in common_words:
+                total_weight += min(w1, w2)  # Use minimum to avoid over-weighting
+        
+        return min(1.0, total_weight / max(1, max_weight * 0.5)) if max_weight > 0 else 0.0
 
     def _score_naics(self, sol: Dict[str, Any], comp: CompanyORM) -> float:
         s = set(self._list_norm(sol.get("naics_codes")))
@@ -991,48 +1168,201 @@ class MatchingEngine:
             # fallback to keywords vs company capabilities
             required = set(self._list_norm(sol.get("keywords")))
         caps = set(self._list_norm(comp.capabilities))
+        
         if not required:
             return 0.5 if caps else 0.0
-        inter = len(required & caps)
-        return min(1.0, inter / max(1, len(required)))
+        
+        # Exact matches
+        exact_matches, fuzzy_score = self._semantic_match_set(required, caps, threshold=0.5)
+        
+        # Also check in description and capability statement for additional matches
+        comp_text = " ".join([
+            comp.description or "",
+            comp.capability_statement or "",
+            " ".join(comp.keywords or [])
+        ])
+        
+        text_match_score = 0.0
+        for req_cap in required:
+            if req_cap in comp_text.lower():
+                text_match_score += 0.3  # Partial credit for text mentions
+        
+        # Combine exact, fuzzy, and text matches
+        total_matches = exact_matches + (fuzzy_score * 0.7) + (text_match_score * 0.5)
+        return min(1.0, total_matches / max(1, len(required)))
 
     def _score_past_perf(self, sol: Dict[str, Any], comp: CompanyORM) -> float:
-        # very simple proxy: if keywords overlap with company keywords/description
+        """Improved past performance scoring using text similarity and keyword matching"""
         kws = set(self._list_norm(sol.get("keywords")))
         comp_kws = set(self._list_norm(comp.keywords))
-        desc = set(self._list_norm(re.findall(r"[a-zA-Z][a-zA-Z0-9\-]{2,}", comp.description or "")))
-        inter = len(kws & (comp_kws | desc))
-        return min(1.0, inter / max(1, len(kws))) if kws else (0.3 if comp_kws or desc else 0.0)
+        
+        # Build company text corpus
+        comp_text = " ".join([
+            comp.description or "",
+            comp.capability_statement or "",
+            " ".join(comp.capabilities or []),
+            " ".join(comp_kws)
+        ])
+        
+        # Build solicitation text corpus
+        sol_text = " ".join([
+            sol.get("raw_text", "")[:2000],  # Limit to avoid too much text
+            " ".join(kws)
+        ])
+        
+        # Text similarity score
+        text_sim = self._text_similarity(sol_text, comp_text)
+        
+        # Keyword overlap score
+        desc_words = set(self._extract_words_from_text(comp.description or "").keys())
+        keyword_overlap = len(kws & (comp_kws | desc_words))
+        keyword_score = min(1.0, keyword_overlap / max(1, len(kws))) if kws else 0.0
+        
+        # Combine scores (weighted: 60% text similarity, 40% keyword overlap)
+        if kws:
+            return (text_sim * 0.6) + (keyword_score * 0.4)
+        else:
+            return 0.3 if comp_text.strip() else 0.0
+
+    def _is_small_business(self, comp: CompanyORM) -> bool:
+        """Determine if company is small business based on employee headcount.
+        Small business: 500 or fewer employees
+        Large business: 501 or more employees
+        """
+        if comp.employees is None:
+            # Fallback to size field if employee count not available
+            comp_size = self._norm(comp.size)
+            return comp_size in {"small", "micro"}
+        return comp.employees <= 500
 
     def _score_size_status(self, sol: Dict[str, Any], comp: CompanyORM) -> float:
-        # If solicitation mentions Small Business set-aside, prefer Small
+        """Score based on company size determined by employee headcount.
+        Small business: 500 or fewer employees
+        Large business: 501 or more employees
+        """
         req_ss = set(self._list_norm(sol.get("set_asides")))
-        comp_size = self._norm(comp.size)
+        is_small = self._is_small_business(comp)
+        
         if not req_ss:
-            return 0.5 if comp_size else 0.0
+            # No set-aside requirement, neutral score
+            return 0.5 if comp.employees is not None or comp.size else 0.0
+        
+        # If solicitation requires Small Business set-aside
         if "small business" in req_ss or "sb" in req_ss:
-            return 1.0 if comp_size in {"small", "micro"} else 0.0
-        return 0.5
+            return 1.0 if is_small else 0.0
+        
+        # Other set-asides (8(a), WOSB, etc.) - still prefer small business
+        return 1.0 if is_small else 0.5
 
     def _score_clearance(self, sol: Dict[str, Any], comp: CompanyORM) -> float:
         req = self._norm(sol.get("security_clearance"))
         if not req:
             return 0.5
         clrs = set(self._list_norm(comp.security_clearances))
-        return 1.0 if req in clrs else 0.0
+        
+        # Exact match
+        if req in clrs:
+            return 1.0
+        
+        # Fuzzy matching for clearance levels
+        clearance_hierarchy = {
+            "public trust": ["public trust"],
+            "confidential": ["confidential", "public trust"],
+            "secret": ["secret", "confidential", "public trust"],
+            "top secret": ["top secret", "ts", "ts/sci", "secret", "confidential"],
+            "ts": ["top secret", "ts", "ts/sci"],
+            "ts/sci": ["top secret", "ts", "ts/sci"]
+        }
+        
+        req_normalized = req.replace("/", " ").replace("-", " ")
+        for level, equivalents in clearance_hierarchy.items():
+            if level in req_normalized:
+                for equiv in equivalents:
+                    if any(equiv in c.replace("/", " ").replace("-", " ") for c in clrs):
+                        return 1.0
+        
+        return 0.0
 
     def _score_location(self, sol: Dict[str, Any], comp: CompanyORM) -> float:
-        # crude: match any location word overlap
-        sol_loc = set(self._list_norm([sol.get("place_of_performance")]))
-        comp_loc = set(self._list_norm(comp.locations))
-        return 1.0 if sol_loc and (sol_loc & comp_loc) else (0.4 if comp_loc else 0.0)
+        """Improved location matching with state abbreviations and fuzzy matching"""
+        sol_loc_str = self._norm(sol.get("place_of_performance") or "")
+        comp_locs = self._list_norm(comp.locations or [])
+        
+        if not sol_loc_str:
+            return 0.4 if comp_locs else 0.0
+        
+        if not comp_locs:
+            return 0.0
+        
+        # Extract state abbreviations from solicitation location
+        sol_states = set()
+        sol_words = sol_loc_str.split()
+        for word in sol_words:
+            word_norm = self._norm(word)
+            if word_norm in self.state_abbrevs.values():
+                sol_states.add(word_norm)
+            # Check if it's a full state name
+            for state_name, abbrev in self.state_abbrevs.items():
+                if state_name in sol_loc_str or word_norm == abbrev:
+                    sol_states.add(abbrev)
+        
+        # Check company locations
+        comp_states = set()
+        for loc in comp_locs:
+            loc_norm = self._norm(loc)
+            if loc_norm in self.state_abbrevs.values():
+                comp_states.add(loc_norm)
+            for state_name, abbrev in self.state_abbrevs.items():
+                if state_name in loc_norm or loc_norm == abbrev:
+                    comp_states.add(abbrev)
+        
+        # Exact state match
+        if sol_states and comp_states and (sol_states & comp_states):
+            return 1.0
+        
+        # Word overlap (for city names, regions, etc.)
+        sol_words_set = set(sol_loc_str.split())
+        for comp_loc in comp_locs:
+            comp_words_set = set(self._norm(comp_loc).split())
+            overlap = len(sol_words_set & comp_words_set)
+            if overlap > 0:
+                return 0.6 * (overlap / max(len(sol_words_set), len(comp_words_set)))
+        
+        # Partial string match
+        for comp_loc in comp_locs:
+            if sol_loc_str in comp_loc or comp_loc in sol_loc_str:
+                return 0.5
+        
+        return 0.0
 
     def _score_keywords(self, sol: Dict[str, Any], comp: CompanyORM) -> float:
+        """Improved keyword matching with semantic matching and text search"""
         kws = set(self._list_norm(sol.get("keywords")))
+        if not kws:
+            caps = set(self._list_norm(comp.capabilities))
+            comp_kws = set(self._list_norm(comp.keywords))
+            return 0.3 if caps or comp_kws else 0.0
+        
         caps = set(self._list_norm(comp.capabilities))
         comp_kws = set(self._list_norm(comp.keywords))
-        inter = len(kws & (caps | comp_kws))
-        return min(1.0, inter / max(1, len(kws))) if kws else (0.3 if caps or comp_kws else 0.0)
+        
+        # Exact matches
+        exact_matches, fuzzy_score = self._semantic_match_set(kws, caps | comp_kws, threshold=0.4)
+        
+        # Also search in description and capability statement
+        comp_text = " ".join([
+            comp.description or "",
+            comp.capability_statement or ""
+        ]).lower()
+        
+        text_matches = 0
+        for kw in kws:
+            if kw in comp_text:
+                text_matches += 1
+        
+        # Combine: exact matches (full weight), fuzzy matches (70% weight), text matches (50% weight)
+        total_score = exact_matches + (fuzzy_score * 0.7) + (text_matches * 0.5)
+        return min(1.0, total_score / max(1, len(kws)))
 
     def _meets_set_aside(self, comp: CompanyORM, required: List[str]) -> bool:
         comp_ss = set(self._list_norm(comp.socioeconomic_status))
@@ -1295,15 +1625,9 @@ async def upload_and_parse_file(file: UploadFile = File(...)):
         filename_lower = file.filename.lower() if file.filename else ""
         
         if filename_lower.endswith('.pdf'):
-            # Extract text from PDF
-            try:
-                import PyPDF2
-                with open(tmp_path, 'rb') as pdf_file:
-                    pdf_reader = PyPDF2.PdfReader(pdf_file)
-                    for page in pdf_reader.pages:
-                        text += page.extract_text() + "\n"
-            except Exception as e:
-                logger.error(f"Error extracting PDF: {e}")
+            # Extract text from PDF using enhanced engine
+            text = extract_text_from_pdf_enhanced(tmp_path)
+            if not text:
                 raise HTTPException(status_code=400, detail="Could not extract text from PDF. Please try a text-based PDF or copy the text manually.")
         
         elif filename_lower.endswith('.docx'):
@@ -1479,6 +1803,12 @@ def match_companies(
         scored.sort(key=lambda x: x[1], reverse=True)
         results: List[MatchResult] = []
         for c, score, strengths, gaps in scored[:top_k]:
+            # CRITICAL: Filter out companies without websites
+            is_valid, error_msg = is_valid_website_url(c.website)
+            if not is_valid:
+                logger.debug(f"🚫 /api/match FILTER: Excluding {c.name} - {error_msg}")
+                continue
+            
             results.append(MatchResult(
                 company_id=c.company_id,
                 name=c.name,
@@ -1514,21 +1844,25 @@ async def enrich_company_endpoint(
         }
         
         # Enrich from data sources
-        enrichment_results = await data_source_manager.enrich_company_all_sources(
-            company.name,
-            context=context,
-            sources=sources
-        )
+        enrichment_result = await data_source_manager.enrich_company(company.name, company_data=context)
+        
+        # Update employee count from enrichment data if available (e.g., web scraping)
+        for source_name, source_data in enrichment_result.enrichment_data.items():
+            if isinstance(source_data, dict) and source_data.get("employee_count"):
+                employee_count = source_data["employee_count"]
+                if company.employees != employee_count:
+                    company.employees = employee_count
+                    db.commit()
+                    logger.info(f"Updated employee count for {company.name} from {source_name}: {employee_count}")
+                    break
         
         # Format results
         formatted_results = {}
-        for source_name, result in enrichment_results.items():
+        for source_name, source_data in enrichment_result.enrichment_data.items():
             formatted_results[source_name] = {
-                "success": not result.error,
-                "confidence": result.confidence,
-                "data": result.data,
-                "error": result.error,
-                "timestamp": result.timestamp.isoformat()
+                "success": True,
+                "data": source_data,
+                "timestamp": enrichment_result.last_updated.isoformat()
             }
         
         return formatted_results
@@ -1591,10 +1925,22 @@ async def match_with_confirmation(
             company = item["company"]
             match_result = item["match_result"]
             
+            # STEP 0: CRITICAL - Early website existence check - filter out companies without websites BEFORE any processing
+            website_url = company.website
+            
+            # Use comprehensive validation helper
+            is_valid, error_msg = is_valid_website_url(website_url)
+            if not is_valid:
+                logger.warning(f"🚫 EARLY FILTER: Excluding {company.name} - {error_msg}")
+                continue  # Skip this company entirely - don't process, don't enrich, don't confirm
+            
+            website_url_clean = str(website_url).strip()
+            
             # Convert company to dict
             company_data = {
                 "company_id": company.company_id,
                 "name": company.name,
+                "website": company.website,  # Include website for verification
                 "naics_codes": company.naics_codes or [],
                 "size": company.size,
                 "socioeconomic_status": company.socioeconomic_status or [],
@@ -1604,7 +1950,8 @@ async def match_with_confirmation(
                 "employees": company.employees,
                 "annual_revenue": company.annual_revenue,
                 "description": company.description,
-                "keywords": company.keywords or []
+                "keywords": company.keywords or [],
+                "capability_statement": company.capability_statement
             }
             
             # Enrich if requested
@@ -1620,7 +1967,7 @@ async def match_with_confirmation(
                     context=context
                 )
             
-            # Confirm
+            # Confirm (includes website validation)
             confirmation_result = await confirmation_engine.confirm_match(
                 company_data=company_data,
                 solicitation_data=sol_dict,
@@ -1628,19 +1975,127 @@ async def match_with_confirmation(
                 enrichment_data=enrichment_data
             )
             
+            # Extract website validation results and update match score
+            website_validation = confirmation_result.website_validation
+            website_alignment_score = 0.5  # Default neutral
+            website_verified = False
+            solicitation_alignment = {}
+            
+            if website_validation and website_validation.website_accessible:
+                # Critical check: Only use website data if content is verified (anti-hallucination)
+                content_verified = website_validation.raw_website_data.get("content_validated", False)
+                solicitation_alignment = website_validation.raw_website_data.get("solicitation_alignment", {})
+                content_verified_alignment = solicitation_alignment.get("content_verified", False)
+                
+                # Apply hallucination penalty if detected
+                hallucination_penalty = solicitation_alignment.get("hallucination_penalty", 0.0)
+                
+                if content_verified and content_verified_alignment:
+                    website_verified = True
+                    website_alignment_score = solicitation_alignment.get("overall_alignment_score", website_validation.validation_score)
+                    
+                    # Update match score based on website verification
+                    # Website alignment acts as a confidence multiplier based on deep crawl analysis
+                    # If website strongly aligns with solicitation, boost score; if misaligned, reduce score
+                    website_boost = (website_alignment_score - 0.5) * 0.2  # ±10% max adjustment
+                    adjusted_match_score = max(0.0, min(1.0, match_result["score"] + website_boost))
+                    
+                    # If website alignment is very high (>0.8), add confidence boost
+                    if website_alignment_score >= 0.8:
+                        adjusted_match_score = min(1.0, adjusted_match_score + 0.05)  # +5% boost
+                    # If website alignment is very low (<0.3), reduce confidence
+                    elif website_alignment_score < 0.3:
+                        adjusted_match_score = max(0.0, adjusted_match_score - 0.1)  # -10% penalty
+                    
+                    # Apply hallucination penalty (reduces score if AI hallucinated)
+                    if hallucination_penalty > 0:
+                        adjusted_match_score = max(0.0, adjusted_match_score - (hallucination_penalty * 0.3))  # Up to 30% reduction
+                        logger.warning(f"Applied hallucination penalty of {hallucination_penalty:.1%} to match score for {company.name}")
+                else:
+                    # Content not verified - apply significant penalty (anti-hallucination)
+                    website_verified = False
+                    website_alignment_score = 0.0
+                    adjusted_match_score = match_result["score"] * 0.70  # -30% penalty for unverified content
+                    logger.warning(f"Website content not verified for {company.name} - applying unverified content penalty")
+            else:
+                # No website or inaccessible - slight penalty for lack of verification
+                adjusted_match_score = match_result["score"] * 0.95  # -5% for unverified
+                if not company.website:
+                    adjusted_match_score = match_result["score"] * 0.90  # -10% if no website
+            
+            # Step 4: FINAL website validation check (first page only) - double-check website exists and has content
+            # This is a SECOND confirmation step to ensure website exists before returning results
+            url_has_content = False
+            
+            # Re-verify website still exists (defensive check)
+            if not website_url_clean:
+                logger.error(f"🚫 FINAL FILTER: {company.name} website URL missing after processing - excluding")
+                continue
+            
+            # Quick first-page validation to check if URL has meaningful content
+            try:
+                url_has_content = await confirmation_engine.website_validator.quick_validate_website_url(website_url_clean)
+                if not url_has_content:
+                    logger.warning(f"🚫 FINAL FILTER: Excluding {company.name} - Website URL {website_url_clean} has no valid content")
+                    continue  # Skip this company - don't include in results
+            except Exception as e:
+                logger.error(f"🚫 FINAL FILTER: Excluding {company.name} - Website validation failed: {e}")
+                continue  # Skip this company if validation throws an error
+            
             results.append({
                 "company_id": company.company_id,
                 "company_name": company.name,
-                "match_score": match_result["score"],
+                "website": website_url_clean,  # CRITICAL: Include the validated website URL that was checked
+                "match_score": round(adjusted_match_score, 4),  # Updated score with website verification
+                "original_match_score": round(match_result["score"], 4),  # Original before website verification
                 "match_strengths": match_result["strengths"],
                 "match_gaps": match_result["gaps"],
                 "confirmation_status": confirmation_result.overall_status.value,
                 "confirmation_confidence": confirmation_result.overall_confidence,
                 "confirmation_summary": confirmation_result.summary,
-                "enrichment_sources": confirmation_result.enrichment_sources_used
+                "enrichment_sources": confirmation_result.enrichment_sources_used,
+                "website_verified": website_verified,
+                "website_url_validated": url_has_content,  # First-page content validation
+                "website_alignment_score": round(website_alignment_score, 4) if website_verified else None,
+                "website_validation": {
+                    "accessible": website_validation.website_accessible if website_validation else False,
+                    "content_verified": website_validation.raw_website_data.get("content_validated", False) if website_validation else False,
+                    "pages_crawled": website_validation.raw_website_data.get("pages_crawled", 0) if website_validation else 0,
+                    "validation_score": website_validation.validation_score if website_validation else None,
+                    "solicitation_alignment": solicitation_alignment if website_validation and website_verified else None,
+                    "capability_matches": solicitation_alignment.get("capability_matches", []) if website_validation and website_verified else [],
+                    "capability_gaps": solicitation_alignment.get("capability_gaps", []) if website_validation and website_verified else [],
+                    "hallucination_penalty": solicitation_alignment.get("hallucination_penalty", 0.0) if website_validation and solicitation_alignment else None,
+                    "content_verified_alignment": solicitation_alignment.get("content_verified", False) if website_validation and solicitation_alignment else None
+                } if website_validation else None
             })
         
-        return results
+        # FINAL STEP: Last-chance filter - remove any companies without websites that somehow got through
+        final_filtered_results = []
+        for result in results:
+            # Check if website exists in the result - THIS IS THE URL THAT WILL BE DISPLAYED
+            company_name = result.get("company_name", "Unknown")
+            website_url = result.get("website", "")  # This is the URL shown in "Why a match"
+            website_validation = result.get("website_validation", {})
+            website_url_validated = result.get("website_url_validated", False)
+            
+            # CRITICAL: Verify the website field exists and matches what we validated
+            is_valid, error_msg = is_valid_website_url(website_url)
+            if not is_valid:
+                logger.error(f"🚫 FINAL RETURN FILTER: Excluding {company_name} - {error_msg}")
+                continue
+            
+            # If website validation failed or doesn't exist, exclude
+            if not website_url_validated:
+                logger.warning(f"🚫 FINAL RETURN FILTER: Excluding {company_name} - Website not validated (URL: '{website_url}')")
+                continue
+            
+            # Log for debugging - confirm the URL being returned matches what was validated
+            logger.info(f"✓ FINAL CHECK: {company_name} - Website '{website_url}' validated and included in results")
+            final_filtered_results.append(result)
+        
+        logger.info(f"✓ FINAL FILTERED: {len(final_filtered_results)} companies with verified websites (filtered from {len(results)} processed, {len(matched_companies)} total matched)")
+        return final_filtered_results
         
     finally:
         db.close()
@@ -1814,7 +2269,24 @@ async def full_pipeline(
         
         search_results = await theme_search.search_by_themes(themes, max_companies=initial_request_count, company_type=company_type, company_size=company_size)
         
-        logger.info(f"🔍 DEBUG SEARCH: Theme search returned {len(search_results)} companies")
+        # CRITICAL: Filter search_results IMMEDIATELY - remove companies without websites BEFORE they enter pipeline
+        filtered_search_results = []
+        for company in search_results:
+            company_website = company.get('website', '')
+            company_name = company.get('name', 'Unknown')
+            # AGGRESSIVE FILTER: Must have valid website
+            is_valid, error_msg = is_valid_website_url(company_website)
+            if not is_valid:
+                logger.warning(f"🚫 THEME SEARCH FILTER: Removing {company_name} - {error_msg}")
+                continue
+            filtered_search_results.append(company)
+        
+        if len(filtered_search_results) != len(search_results):
+            logger.error(f"🚨 THEME SEARCH FILTERED: Removed {len(search_results) - len(filtered_search_results)} companies without websites from search_results!")
+        
+        search_results = filtered_search_results
+        
+        logger.info(f"🔍 DEBUG SEARCH: Theme search returned {len(search_results)} companies (after website filter)")
         if len(search_results) == 0:
             logger.error("❌ CRITICAL: Theme search returned 0 companies!")
             logger.error(f"   Themes available: {list(themes.keys())}")
@@ -1829,11 +2301,24 @@ async def full_pipeline(
                 me = MatchingEngine(weights=load_weights())
                 companies = db.query(CompanyORM).all()
                 
-                # Apply size filter
+                # Apply size filter based on employee headcount
+                # Small business: 500 or fewer employees
+                # Large business: 501 or more employees
+                # If employee count is unknown, allow through for "small" (default assumption)
+                # but exclude for "large" (requires proof of large size)
                 if company_size == "small":
-                    companies = [c for c in companies if c.size and "small" in c.size.lower()]
+                    companies = [
+                        c for c in companies 
+                        if (c.employees is not None and c.employees <= 500) or 
+                           (c.employees is None and c.size and "small" in c.size.lower()) or
+                           (c.employees is None and not c.size)  # Unknown size - allow through for small business selection
+                    ]
                 elif company_size == "large":
-                    companies = [c for c in companies if c.size and "large" in c.size.lower()]
+                    companies = [
+                        c for c in companies 
+                        if (c.employees is not None and c.employees > 500) or 
+                           (c.employees is None and c.size and "large" in c.size.lower())
+                    ]
                 
                 # Score companies
                 scored = []
@@ -1843,8 +2328,15 @@ async def full_pipeline(
                 
                 scored.sort(key=lambda x: x[1], reverse=True)
                 
-                # Convert to search_results format
+                # Convert to search_results format - CRITICAL: Only include companies with websites
                 for c, score, strengths, gaps in scored[:initial_request_count]:
+                    company_website = getattr(c, 'website', None)
+                    # FILTER: Only include companies with valid websites
+                    is_valid, error_msg = is_valid_website_url(company_website)
+                    if not is_valid:
+                        logger.debug(f"🚫 DATABASE SEARCH FILTER: Excluding {c.name} - {error_msg}")
+                        continue
+                    
                     search_results.append({
                         "name": c.name,
                         "company_id": c.company_id,
@@ -1852,7 +2344,7 @@ async def full_pipeline(
                         "description": c.description or "",
                         "capabilities": c.capabilities or [],
                         "naics_codes": c.naics_codes or [],
-                        "website": getattr(c, 'website', None),
+                        "website": str(company_website).strip(),  # Ensure it's a valid string
                         "source": "database"
                     })
                 
@@ -1892,7 +2384,20 @@ async def full_pipeline(
         # Run confirmation on ALL returned companies
         logger.info(f"Running confirmation analysis on all {total_companies} companies")
         confirmation_results = []
-        companies_to_confirm = search_results  # All companies returned
+        
+        # CRITICAL: Filter companies_to_confirm - only include those with websites
+        companies_to_confirm = []
+        for company in search_results:
+            company_website = company.get('website', '')
+            if not company_website or not str(company_website).strip() or len(str(company_website).strip()) < 4:
+                logger.warning(f"🚫 CONFIRMATION FILTER: Skipping {company.get('name', 'Unknown')} - No valid website")
+                continue
+            companies_to_confirm.append(company)
+        
+        if len(companies_to_confirm) != len(search_results):
+            logger.error(f"🚨 CONFIRMATION FILTER: Filtered out {len(search_results) - len(companies_to_confirm)} companies without websites before confirmation!")
+        
+        logger.info(f"🔍 Companies to confirm (after website filter): {len(companies_to_confirm)}")
         
         # Check if ChatGPT is available for confirmation
         if "chatgpt" in data_source_manager.sources:
@@ -2027,6 +2532,12 @@ async def full_pipeline(
         for idx, (company, confirmation) in enumerate(zip(companies_to_confirm, confirmation_results)):
             company_name = company.get('name', 'Unknown Company')
             
+            # CRITICAL CHECK: Verify website still exists before combining
+            company_website_check = company.get('website', '')
+            if not company_website_check or not str(company_website_check).strip() or len(str(company_website_check).strip()) < 4:
+                logger.error(f"🚫 COMBINE FILTER: Skipping {company_name} - No valid website in company object: '{company_website_check}'")
+                continue
+            
             # Handle confirmation errors
             if isinstance(confirmation, Exception):
                 logger.error(f"Confirmation failed for {company_name}: {confirmation}")
@@ -2060,14 +2571,45 @@ async def full_pipeline(
         combined_results.sort(key=lambda x: x['final_score'], reverse=True)
         logger.info("Re-ordered companies based on confirmation scores")
         
-        # WEBSITE VALIDATION DISABLED FOR PERFORMANCE
-        # This was causing 0 companies to be returned due to slow HTTP requests timing out
-        # Skip validation entirely - include all companies
-        logger.info("⏭️ Website validation DISABLED - including all companies")
-        validated_results = combined_results
+        # Step 4: Quick URL validation (first page only) - filter out companies without valid website content
+        # This happens AFTER confirmation to ensure we only show companies with real websites in "why a match"
+        logger.info(f"🔍 Validating website URLs for {len(combined_results)} companies (first page only)...")
+        validated_results = []
         companies_filtered = 0
         
-        logger.info(f"✅ All {len(validated_results)} companies included (validation skipped)")
+        # Initialize website validator for quick checks
+        from website_validator import WebsiteValidator
+        website_validator = WebsiteValidator()
+        
+        for result in combined_results:
+            company = result['company']
+            company_website = company.get('website', '')
+            
+            # CRITICAL: Filter out companies without websites
+            is_valid, error_msg = is_valid_website_url(company_website)
+            if not is_valid:
+                companies_filtered += 1
+                logger.info(f"⚠ Filtering out {company.get('name', 'Unknown')}: {error_msg}")
+                continue
+            
+            # Quick first-page validation to check if URL has meaningful content
+            try:
+                url_has_content = await website_validator.quick_validate_website_url(company_website)
+                if not url_has_content:
+                    companies_filtered += 1
+                    logger.info(f"⚠ Filtering out {company.get('name', 'Unknown')}: Website URL {company_website} has no valid content")
+                    continue
+                
+                # Website has valid content - include in results
+                result['website_url_validated'] = True
+                validated_results.append(result)
+            except Exception as e:
+                # If validation fails, filter out to be safe
+                companies_filtered += 1
+                logger.warning(f"⚠ Filtering out {company.get('name', 'Unknown')}: Website validation error: {e}")
+                continue
+        
+        logger.info(f"✅ URL validation complete: {len(validated_results)} companies with valid website content (filtered out {companies_filtered})")
         
         # Check if we have enough companies after filtering
         requested_count = top_k
@@ -2147,6 +2689,13 @@ async def full_pipeline(
                     "pre_validated": False
                 }
             
+            # CRITICAL CHECK: Verify website exists before adding to final_results
+            company_website_check = company.get('website', '')
+            is_valid, error_msg = is_valid_website_url(company_website_check)
+            if not is_valid:
+                logger.error(f"🚫 FINAL RESULTS APPEND: Excluding {company.get('name', 'Unknown')} - {error_msg}")
+                continue  # Skip - don't add to final_results
+            
             final_results.append({
                 "company_id": company.get('id', f"search_{idx}"),
                 "company_name": company.get('name', 'Unknown Company'),
@@ -2159,7 +2708,7 @@ async def full_pipeline(
                 
                 # Company details
                 "description": company.get('description', ''),
-                "website": company.get('website', ''),
+                "website": str(company_website_check).strip(),  # Use validated website
                 "website_validation": website_validation_data,
                 "locations": company.get('locations', []),
                 "capabilities": company.get('capabilities', []),
@@ -2223,6 +2772,42 @@ Your capabilities appear to address aspects of the solicitation's stated require
                 ]
             })
         
+        # FINAL CONFIRMATION STEP: Remove any companies without websites before returning
+        # This ensures the website URL in the result matches what was validated
+        website_filtered_results = []
+        for result in final_results:
+            company_website = result.get('website', '')
+            company_name = result.get('company_name', 'Unknown')
+            
+            # CRITICAL: Final check - exclude companies without websites
+            # This is the URL that will be displayed in "Why a match" - must exist and be valid
+            is_valid, error_msg = is_valid_website_url(company_website)
+            if not is_valid:
+                logger.error(f"🚫 FINAL RETURN FILTER (MAIN): Excluding {company_name} - {error_msg}")
+                continue
+            
+            # Verify this is the same URL that was validated earlier
+            website_validation = result.get('website_validation', {})
+            validated_url = website_validation.get('website_url', '') if website_validation else ''
+            
+            # If we have a validated URL, ensure it matches (or website_validation indicates it's available)
+            if validated_url and validated_url != company_website:
+                logger.warning(f"⚠ URL MISMATCH: {company_name} - Result website '{company_website}' != validated URL '{validated_url}'")
+                # Use the validated URL instead
+                result['website'] = validated_url
+                company_website = validated_url
+            
+            # Also check if website validation indicates the website is accessible
+            if website_validation and not website_validation.get('available', True):
+                logger.warning(f"🚫 FINAL RETURN FILTER (MAIN): Excluding {company_name} - Website validation indicates not available")
+                continue
+            
+            logger.info(f"✓ FINAL CHECK (MAIN): {company_name} - Website '{company_website}' confirmed and included")
+            website_filtered_results.append(result)
+        
+        logger.info(f"🚫 FINAL FILTER: Filtered from {len(final_results)} to {len(website_filtered_results)} companies with verified websites")
+        final_results = website_filtered_results
+        
         # NUCLEAR OPTION: Force alignment_summary in response if missing
         for result in final_results:
             conf_result = result.get('confirmation_result')
@@ -2233,8 +2818,43 @@ Your capabilities appear to address aspects of the solicitation's stated require
 
 Your capabilities appear to address aspects of the solicitation's stated requirements. You show technical expertise, methodologies, and industry experience that may align with program needs. Your track record suggests readiness to execute, though verification of specific capabilities would strengthen the proposal evaluation."""
         
+        # ABSOLUTE FINAL SAFETY CHECK: One last pass to ensure no companies without websites
+        absolutely_final_results = []
+        for result in final_results:
+            website = result.get('website', '')
+            company_name = result.get('company_name', 'Unknown')
+            if not website or not str(website).strip() or len(str(website).strip()) < 4:
+                logger.error(f"🚫 ABSOLUTE FINAL CHECK: Removing {company_name} - No valid website found (website: '{website}')")
+                continue
+            absolutely_final_results.append(result)
+        
+        if len(absolutely_final_results) != len(final_results):
+            logger.error(f"🚨 CRITICAL: Final safety check removed {len(final_results) - len(absolutely_final_results)} companies without websites!")
+        
+        final_results = absolutely_final_results
+        
+        # NUCLEAR OPTION: Filter INSIDE response_data construction - absolute last check
+        # This ensures even if something modified final_results, we filter again
+        filtered_for_response = []
+        for result in final_results:
+            website_check = result.get('website', '')
+            name_check = result.get('company_name', 'Unknown')
+            # AGGRESSIVE CHECK: Must have valid website
+            if not website_check or not str(website_check).strip() or len(str(website_check).strip()) < 4:
+                logger.error(f"🚫 NUCLEAR FILTER IN RESPONSE: Removing {name_check} - Invalid website: '{website_check}'")
+                continue
+            # DOUBLE CHECK: Website must not be None, empty, or just whitespace
+            website_str = str(website_check).strip()
+            if website_str in ['None', 'null', 'NULL', ''] or len(website_str) < 4:
+                logger.error(f"🚫 NUCLEAR FILTER IN RESPONSE: Removing {name_check} - Website is invalid: '{website_str}'")
+                continue
+            filtered_for_response.append(result)
+        
+        if len(filtered_for_response) != len(final_results):
+            logger.error(f"🚨 NUCLEAR FILTER REMOVED {len(final_results) - len(filtered_for_response)} companies without websites in response construction!")
+        
         # Return all results (no pagination - slider determines count)
-        logger.info(f"🔍 DEBUG FINAL: Returning {len(final_results)} companies in response (requested {top_k})")
+        logger.info(f"🔍 DEBUG FINAL: Returning {len(filtered_for_response)} companies in response (requested {top_k})")
         logger.info(f"🔍 DEBUG FINAL: search_results had {len(search_results)} companies")
         logger.info(f"🔍 DEBUG FINAL: combined_results had {len(combined_results)} companies")
         response_data = {
@@ -2246,8 +2866,8 @@ Your capabilities appear to address aspects of the solicitation's stated require
                 "security_clearance": sol_dict.get("security_clearance")
             },
             "companies_evaluated": len(search_results),
-            "top_matches_analyzed": len(final_results),
-            "results": final_results,
+            "top_matches_analyzed": len(filtered_for_response),
+            "results": filtered_for_response,  # USE FILTERED VERSION
             "pagination": {
                 "total_matches_above_50": total_companies,  # Total companies found
                 "current_batch": total_companies,  # Showing all
@@ -2271,6 +2891,28 @@ Your capabilities appear to address aspects of the solicitation's stated require
             }
             logger.info(f"📊 Including shortage notice in response: {shortage_message}")
         
+        # FINAL NUCLEAR CHECK: One more pass through response_data["results"] before returning
+        final_response_results = []
+        for result in response_data.get("results", []):
+            website_final = result.get('website', '')
+            name_final = result.get('company_name', 'Unknown')
+            if not website_final or not str(website_final).strip() or len(str(website_final).strip()) < 4:
+                logger.error(f"🚫 NUCLEAR RESPONSE CHECK: Removing {name_final} from response_data - No valid website: '{website_final}'")
+                continue
+            # Additional check: website must not be None/null as string
+            website_str = str(website_final).strip()
+            if website_str.lower() in ['none', 'null', 'nil', '']:
+                logger.error(f"🚫 NUCLEAR RESPONSE CHECK: Removing {name_final} - Website is None/null: '{website_str}'")
+                continue
+            final_response_results.append(result)
+        
+        if len(final_response_results) != len(response_data.get("results", [])):
+            logger.error(f"🚨 NUCLEAR RESPONSE CHECK: Removed {len(response_data.get('results', [])) - len(final_response_results)} companies without websites from response_data!")
+        
+        response_data["results"] = final_response_results
+        response_data["top_matches_analyzed"] = len(final_response_results)
+        
+        logger.info(f"🚫 FINAL RETURN: Sending {len(final_response_results)} companies with verified websites to frontend")
         return response_data
         
     except Exception as e:
@@ -2350,6 +2992,13 @@ async def load_next_batch(
             else:
                 final_score = search_score
             
+            # CRITICAL CHECK: Verify website exists before adding to final_results
+            company_website_check2 = company.get('website', '')
+            is_valid, error_msg = is_valid_website_url(company_website_check2)
+            if not is_valid:
+                logger.error(f"🚫 FINAL RESULTS APPEND (ALT): Excluding {company_name} - {error_msg}")
+                continue  # Skip - don't add to final_results
+            
             final_results.append({
                 "company_id": company.get('id', f"search_{idx}"),
                 "company_name": company_name,
@@ -2360,7 +3009,7 @@ async def load_next_batch(
                 "risk_level": "low" if confirmation and confirmation.get('is_confirmed') else "medium",
                 "recommendation": f"Rank #{idx}",
                 "description": company.get('description', ''),
-                "website": company.get('website', ''),
+                "website": str(company_website_check2).strip(),  # Use validated website
                 "sources": company.get('sources', []),
                 "strengths": confirmation.get('findings', {}).get('strengths', []) if confirmation else [],
                 "weaknesses": [],
